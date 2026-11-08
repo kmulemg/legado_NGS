@@ -44,8 +44,17 @@ jobs:
         run: |
           set -euo pipefail
           # 用官方接口而不是本地 git merge，避免 main 上的本文件让 ff-only 永远失败
-          resp=$(gh api -X POST "repos/${{ github.repository }}/merge-upstream" -f branch=main)
-          echo "$resp" | jq -r '"merge_type=\(.merge_type) base_branch=\(.base_branch)"'
+          # 注意：GITHUB_TOKEN 属于 GitHub App 身份，没有 workflows 权限；上游一旦新增或修改
+          # .github/workflows/**，这里的快进会被拒绝（HTTP 422），必须改用带 repo+workflow
+          # 权限的 PAT（见 AGENTS.md「自动化令牌」）。
+          err="$RUNNER_TEMP/merge-upstream.err"
+          if resp=$(gh api -X POST "repos/${{ github.repository }}/merge-upstream" -f branch=main 2>"$err"); then
+            echo "$resp" | jq -r '"merge_type=\(.merge_type) base_branch=\(.base_branch)"'
+          else
+            cat "$err"
+            echo "::error::merge-upstream 失败，未推送任何改动，详见自动创建的 issue"
+            exit 1
+          fi
 
       - name: 检出 custom
         uses: actions/checkout@v5
@@ -94,7 +103,7 @@ jobs:
           git push origin "HEAD:${TARGET_BRANCH}"
           # 用 GITHUB_TOKEN 推的提交不会触发其他 workflow，
           # 所以显式派发一次 custom-apk（workflow_dispatch 不受这条限制）。
-          gh workflow run "$APK_WORKFLOW" --ref "$TARGET_BRANCH"
+          gh workflow run "$APK_WORKFLOW" --ref "$TARGET_BRANCH" -R "$GITHUB_REPOSITORY"
 
       - name: 冲突时开 issue
         if: steps.merge.outputs.result == 'conflict'
@@ -127,13 +136,13 @@ jobs:
           } > "$body"
 
           # Issues 被关闭时 gh 会非 0 退出，这里不能让它把整个 job 变红
-          existing=$(gh issue list --search 'upstream-sync in:title' --state open \
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --search 'upstream-sync in:title' --state open \
             --limit 1 --json number --jq '.[0].number // ""' || true)
           if [ -n "$existing" ]; then
             echo "追加到已有 issue #$existing"
-            gh issue comment "$existing" --body-file "$body"
+            gh issue comment -R "$GITHUB_REPOSITORY" "$existing" --body-file "$body"
           else
-            gh issue create --title '[upstream-sync] 上游 main 无法自动合入 custom' --body-file "$body"
+            gh issue create -R "$GITHUB_REPOSITORY" --title '[upstream-sync] 上游 main 无法自动合入 custom' --body-file "$body"
           fi
 
       - name: 恢复后关闭遗留 issue
@@ -143,8 +152,55 @@ jobs:
         run: |
           set -euo pipefail
           # Issues 被关闭时 gh 会非 0 退出，这里不能让它把整个 job 变红
-          existing=$(gh issue list --search 'upstream-sync in:title' --state open \
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --search 'upstream-sync in:title' --state open \
             --limit 1 --json number --jq '.[0].number // ""' || true)
           if [ -n "$existing" ]; then
-            gh issue close "$existing" --comment "已自动恢复：本次同步没有冲突，custom 已包含上游 main。"
+            gh issue close -R "$GITHUB_REPOSITORY" "$existing" \
+              --comment "已自动恢复：本次同步没有冲突，custom 已包含上游 main。"
+          fi
+
+      - name: 失败时开/更新 issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 同步会在第一步（merge-upstream）就失败，例如 GITHUB_TOKEN 没有 workflows 权限。
+          # 那种情况下后面的「冲突时开 issue」不会执行，必须单独兜底，否则失败是静默的。
+          set -uo pipefail
+          body="$RUNNER_TEMP/sync-fail.md"
+          {
+            echo "自动同步失败，**未推送任何改动**。"
+            echo
+            echo "- 时间：$(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- 运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            if [ -s "$RUNNER_TEMP/merge-upstream.err" ]; then
+              echo "### 同步 main 报错"
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/merge-upstream.err"
+              echo '```'
+              echo
+            fi
+            echo "### 常见原因"
+            echo
+            echo "- 上游新增/改动了 \`.github/workflows/**\`，而 \`GITHUB_TOKEN\` 没有 \`workflows\` 权限（HTTP 422）→ 需要配 PAT，见 AGENTS.md「自动化令牌」"
+            echo "- 合并 \`main\` 到 \`${TARGET_BRANCH}\` 时冲突（看上方日志与 Step Summary）"
+            echo
+            echo "### 本地处理"
+            echo
+            echo '```bash'
+            echo "git fetch upstream && git branch -f main upstream/main && git push origin main"
+            echo "git switch ${TARGET_BRANCH} && git merge main && git push origin ${TARGET_BRANCH}"
+            echo '```'
+          } > "$body"
+
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --search 'upstream-sync in:title' --state open \
+            --limit 1 --json number --jq '.[0].number // ""' || true)
+          if [ -n "$existing" ]; then
+            echo "追加到已有 issue #$existing"
+            gh issue comment -R "$GITHUB_REPOSITORY" "$existing" --body-file "$body"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" \
+              --title '[upstream-sync] 自动同步失败' --body-file "$body"
           fi
