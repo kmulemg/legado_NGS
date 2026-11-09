@@ -25,11 +25,9 @@ concurrency:
 permissions:
   contents: write   # 同步 main、推送 custom
   issues: write     # 冲突时开/更新 issue，恢复后自动关闭
-  actions: write    # 合并成功后显式派发 custom-apk
 
 env:
   TARGET_BRANCH: custom
-  APK_WORKFLOW: custom-apk.yml
   UPSTREAM_REPO: joestar817/legado_NG
 
 jobs:
@@ -38,15 +36,27 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # GITHUB_TOKEN 属于 GitHub App 身份，没有 workflows 权限：上游一旦新增或修改
+      # .github/workflows/**，merge-upstream 和 git push 都会被拒（HTTP 422）。
+      # 因此整个同步流程都使用带 repo+workflow 权限的 classic PAT（见 AGENTS.md「自动化令牌」）。
+      - name: 校验 SYNC_TOKEN
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SYNC_TOKEN:-}" ]; then
+            echo "::error::缺少仓库 Secret SYNC_TOKEN（classic PAT，需勾选 repo + workflow）"
+            exit 1
+          fi
+          # 不打印 token 本身，只确认非空
+          echo "SYNC_TOKEN 已配置（长度 ${#SYNC_TOKEN}）"
+
       - name: 同步 main（等价网页 Sync fork）
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -euo pipefail
           # 用官方接口而不是本地 git merge，避免 main 上的本文件让 ff-only 永远失败
-          # 注意：GITHUB_TOKEN 属于 GitHub App 身份，没有 workflows 权限；上游一旦新增或修改
-          # .github/workflows/**，这里的快进会被拒绝（HTTP 422），必须改用带 repo+workflow
-          # 权限的 PAT（见 AGENTS.md「自动化令牌」）。
           err="$RUNNER_TEMP/merge-upstream.err"
           if resp=$(gh api -X POST "repos/${{ github.repository }}/merge-upstream" -f branch=main 2>"$err"); then
             echo "$resp" | jq -r '"merge_type=\(.merge_type) base_branch=\(.base_branch)"'
@@ -60,6 +70,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ env.TARGET_BRANCH }}
+          # 用 PAT 检出：git push 走的也是这个凭据，否则用 GITHUB_TOKEN 推的提交
+          # 无法写 .github/workflows/**（HTTP 422）
+          token: ${{ secrets.SYNC_TOKEN }}
           # 合并、冲突检测、custom-apk 的 versionCode 都依赖完整历史
           fetch-depth: 0
 
@@ -94,16 +107,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: 推送 custom 并触发 APK 构建
+      - name: 推送 custom
         if: steps.merge.outputs.result == 'merged'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # 用 PAT 推的提交会正常触发 push 事件，custom-apk 由分支上的 paths-ignore 自己判断，
+          # 所以这里不再额外派发（GITHUB_TOKEN 推送才需要显式 dispatch）。
           git push origin "HEAD:${TARGET_BRANCH}"
-          # 用 GITHUB_TOKEN 推的提交不会触发其他 workflow，
-          # 所以显式派发一次 custom-apk（workflow_dispatch 不受这条限制）。
-          gh workflow run "$APK_WORKFLOW" --ref "$TARGET_BRANCH" -R "$GITHUB_REPOSITORY"
 
       - name: 冲突时开 issue
         if: steps.merge.outputs.result == 'conflict'
