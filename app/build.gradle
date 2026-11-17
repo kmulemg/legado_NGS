@@ -84,6 +84,7 @@ android {
         }
     }
     buildFeatures {
+        aidl = true
         buildConfig = true
         compose = true
         viewBinding = true
@@ -237,6 +238,7 @@ dependencies {
     implementation(libs.reorderable)
     implementation(libs.flexbox)
     implementation(libs.gson)
+    implementation(libs.eddsa)
 
     //lifecycle
     implementation(libs.lifecycle.common.java8)
