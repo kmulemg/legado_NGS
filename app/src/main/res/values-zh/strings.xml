@@ -751,6 +751,7 @@
     <string name="read_catalog_collapse_note">收起备注</string>
     <string name="read_catalog_ascending">正序</string>
     <string name="read_catalog_descending">倒序</string>
+    <string name="read_catalog_locate_current_chapter">定位当前章节</string>
     <string name="read_catalog_vip_unpaid">VIP 章节，未购买</string>
     <string name="read_catalog_vip_purchased">VIP 章节，已购买</string>
     <string name="read_catalog_style">目录抽屉样式</string>
@@ -809,12 +810,6 @@
     <string name="listening_motion_fluid_water">水流</string>
     <string name="listening_motion_fluid_edge">轮廓</string>
     <string name="listening_motion_fluid_summary">流体 · %1$s</string>
-    <string name="listening_motion_cartoon">卡通</string>
-    <string name="listening_motion_cartoon_type">卡通样式</string>
-    <string name="listening_motion_cartoon_sakura">湖畔樱花</string>
-    <string name="listening_motion_cartoon_cats">好奇猫咪</string>
-    <string name="listening_motion_cartoon_rain_night">雨夜</string>
-    <string name="listening_motion_cartoon_summary">卡通 · %1$s</string>
     <string name="listening_motion_color">动效配色</string>
     <string name="listening_motion_color_original">原色</string>
     <string name="listening_motion_color_cover">封面取色</string>
@@ -1647,6 +1642,8 @@
     <string name="restore_ignore_summary">恢复时忽略一些内容不恢复，方便不同手机配置不同</string>
     <string name="read_config">阅读界面设置</string>
     <string name="read_more_settings_title">阅读设置</string>
+    <string name="read_bottom_toolbar">底部工具栏</string>
+    <string name="read_bottom_toolbar_shortcuts">快捷入口</string>
     <string name="read_settings_tab_interface">界面</string>
     <string name="read_settings_tab_page">翻页</string>
     <string name="read_settings_tab_content">正文</string>
@@ -2580,6 +2577,7 @@
     <string name="about_action_update">更新</string>
     <string name="highlight_nine_slice_estimate">估算切线</string>
     <string name="bookshelf_show_reading_progress">显示阅读进度</string>
+    <string name="bookshelf_reading_progress_value">阅读进度 %1$s</string>
     <string name="bookshelf_show_background">显示背景容器</string>
     <string name="rss_editor_undo">撤销</string>
     <string name="rss_editor_redo">重做</string>
@@ -2707,15 +2705,14 @@
     <string name="listening_effect_library">听书特效</string>
     <string name="listening_effect_type">听书特效</string>
     <string name="listening_effect_edit">编辑听书特效</string>
-    <string name="listening_effect_import">导入听书特效</string>
+    <string name="listening_effect_import">导入动效包</string>
     <string name="listening_effect_import_success">已导入 %1$s</string>
-    <string name="listening_effect_update">更新听书特效</string>
-    <string name="listening_effect_replace">替换听书特效</string>
-    <string name="listening_effect_downgrade">降级听书特效</string>
+    <string name="listening_effect_update">更新动效包</string>
+    <string name="listening_effect_replace">替换动效包</string>
+    <string name="listening_effect_downgrade">降级动效包</string>
     <string name="listening_effect_installed">已安装此听书特效</string>
     <string name="listening_effect_uninstall">卸载听书特效</string>
     <string name="listening_effect_uninstall_current">播放器将恢复基础背景</string>
-    <string name="listening_effect_code_notice">听书特效包含可执行代码，请确认来源可信</string>
     <string name="read_page_section_layout">页面布局</string>
     <string name="read_page_section_keys">按键操作</string>
     <string name="read_page_section_touch">触摸操作</string>
