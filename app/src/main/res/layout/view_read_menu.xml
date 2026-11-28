@@ -73,6 +73,7 @@
                     android:clickable="true"
                     android:ellipsize="marquee"
                     android:focusable="true"
+                    android:fontFamily="sans-serif-medium"
                     android:gravity="center_vertical"
                     android:includeFontPadding="false"
                     android:marqueeRepeatLimit="marquee_forever"
@@ -80,7 +81,6 @@
                     android:singleLine="true"
                     android:textColor="@color/primaryText"
                     android:textSize="17sp"
-                    android:textStyle="bold"
                     android:layout_marginStart="10dp"
                     android:layout_marginTop="4dp"
                     android:layout_marginEnd="8dp"
@@ -127,6 +127,7 @@
                         android:clickable="true"
                         android:ellipsize="end"
                         android:focusable="true"
+                        android:fontFamily="sans-serif-medium"
                         android:gravity="center_vertical|end"
                         android:includeFontPadding="false"
                         android:maxWidth="160dp"
@@ -135,7 +136,6 @@
                         android:singleLine="true"
                         android:textColor="@color/accent"
                         android:textSize="14sp"
-                        android:textStyle="bold"
                         app:layout_constrainedWidth="true"
                         app:layout_constraintBottom_toBottomOf="parent"
                         app:layout_constraintEnd_toEndOf="parent"
@@ -596,6 +596,38 @@
                             android:ellipsize="middle"
                             android:singleLine="true"
                             android:text="@string/read_menu_scroll"
+                            android:textColor="@color/primaryText"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/ll_read_characters"
+                        android:layout_width="60dp"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_horizontal"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:paddingBottom="7dp">
+
+                        <androidx.appcompat.widget.AppCompatImageView
+                            android:id="@+id/iv_read_characters"
+                            android:layout_width="match_parent"
+                            android:layout_height="20dp"
+                            android:importantForAccessibility="no"
+                            android:src="@drawable/ic_read_menu_characters"
+                            app:tint="@color/primaryText" />
+
+                        <TextView
+                            android:id="@+id/tv_read_characters"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="center_horizontal"
+                            android:layout_marginTop="3dp"
+                            android:ellipsize="middle"
+                            android:singleLine="true"
+                            android:text="@string/book_characters"
                             android:textColor="@color/primaryText"
                             android:textSize="12sp" />
                     </LinearLayout>

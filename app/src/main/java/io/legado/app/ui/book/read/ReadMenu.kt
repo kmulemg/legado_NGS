@@ -51,6 +51,7 @@ import io.legado.app.ui.book.read.config.applyReadChineseConverter
 import io.legado.app.ui.browser.WebViewActivity
 import io.legado.app.ui.design.components.compose.NgGlassSurface
 import io.legado.app.ui.design.components.compose.NgGlassStyle
+import io.legado.app.ui.design.components.compose.NgMaterialRole
 import io.legado.app.ui.design.components.compose.resolveNgFloatingGlassStyle
 import io.legado.app.ui.design.theme.NgAppTheme
 import io.legado.app.ui.design.theme.NgThemeSnapshot
@@ -257,6 +258,8 @@ class ReadMenu @JvmOverloads constructor(
         tvContent.setTextColor(textColor)
         ivFloating.setColorFilter(textColor, PorterDuff.Mode.SRC_IN)
         tvFloating.setTextColor(textColor)
+        ivReadCharacters.setColorFilter(textColor, PorterDuff.Mode.SRC_IN)
+        tvReadCharacters.setTextColor(textColor)
         if (AppConfig.showReadTitleBarAddition) {
             titleBarAddition.visible()
         } else {
@@ -327,7 +330,9 @@ class ReadMenu @JvmOverloads constructor(
                 NgGlassSurface(
                     modifier = Modifier.fillMaxSize(),
                     shape = RoundedCornerShape(12.dp),
-                    style = readFloatingGlassStyle()
+                    style = readFloatingGlassStyle(),
+                    role = NgMaterialRole.TOP_NAVIGATION,
+                    liquidCornerRadius = 12.dp,
                 ) {}
             }
         }
@@ -339,7 +344,9 @@ class ReadMenu @JvmOverloads constructor(
                 NgGlassSurface(
                     modifier = Modifier.fillMaxSize(),
                     shape = RoundedCornerShape(12.dp),
-                    style = readFloatingGlassStyle()
+                    style = readFloatingGlassStyle(),
+                    role = NgMaterialRole.BOTTOM_NAVIGATION,
+                    liquidCornerRadius = 12.dp,
                 ) {}
             }
         }
@@ -397,9 +404,9 @@ class ReadMenu @JvmOverloads constructor(
                         floatingToolExpansion = null
                         runMenuOut { callBack.onClickAiPurifyChapter() }
                     },
-                    onAiSettings = {
+                    onAiCharacterCards = {
                         floatingToolExpansion = null
-                        runMenuOut { callBack.onOpenAiPurifySettings() }
+                        runMenuOut { callBack.onClickAiCharacterCards() }
                     },
                     onReadAloud = {
                         floatingToolExpansion = null
@@ -818,6 +825,9 @@ class ReadMenu @JvmOverloads constructor(
         llAutoPage.setOnClickListener {
             runMenuOut { callBack.autoPage() }
         }
+        llReadCharacters.setOnClickListener {
+            runMenuOut { callBack.showCharacterSettings() }
+        }
         llContent.setOnClickListener {
             runMenuOut { callBack.showContentSettings() }
         }
@@ -977,6 +987,7 @@ class ReadMenu @JvmOverloads constructor(
         fun showMoreSetting()
         fun showPageTurningSettings()
         fun showContentSettings()
+        fun showCharacterSettings()
         fun showFloatingSettings()
         fun upSystemUiVisibility()
         fun onReadThemeChanged()
@@ -994,7 +1005,7 @@ class ReadMenu @JvmOverloads constructor(
         fun onMenuShow()
         fun onMenuHide()
         fun onClickAiPurifyChapter()
-        fun onOpenAiPurifySettings()
+        fun onClickAiCharacterCards()
     }
 
 }
@@ -1016,6 +1027,7 @@ internal fun ViewReadMenuBinding.applyBottomToolRows(toolRows: List<List<ReadBot
         ReadBottomTool.SCROLL to llAutoPage,
         ReadBottomTool.CONTENT to llContent,
         ReadBottomTool.FLOATING to llFloating,
+        ReadBottomTool.CHARACTERS to llReadCharacters,
     )
     val rows = listOf(llBottomActionsPrimary, llBottomActionsSecondary)
     buttons.values.forEach { button -> (button.parent as? ViewGroup)?.removeView(button) }

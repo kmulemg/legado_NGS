@@ -33,7 +33,14 @@ data class AiModelInfo(
     @SerializedName("supportsReasoningBudget") val supportsReasoningBudget: AiModelValue<Boolean>? = null,
     @SerializedName("defaultReasoningEnabled") val defaultReasoningEnabled: AiModelValue<Boolean>? = null,
     @SerializedName("supportsAdaptiveThinking") val supportsAdaptiveThinking: AiModelValue<Boolean>? = null,
+    @SerializedName("creditMultiplier") val creditMultiplier: String? = null,
+    @SerializedName("catalogType") val catalogType: AiModelValue<AiModelType>? = null,
+    @SerializedName("supportsTemperature") val supportsTemperature: AiModelValue<Boolean>? = null,
+    @SerializedName("supportsStructuredOutput") val supportsStructuredOutput: AiModelValue<Boolean>? = null,
 ) {
+    internal val creditMultiplierLabel: String?
+        get() = creditMultiplier?.let { "$it×" }
+
     internal fun withPrevious(previous: AiModelInfo?): AiModelInfo {
         val sameEndpoint = previous?.takeIf { it.endpoint == endpoint && it.catalogSourceId == catalogSourceId }
         val supported = reasoning.orPrevious(sameEndpoint?.reasoning)
@@ -47,6 +54,9 @@ data class AiModelInfo(
             maxOutputTokens = maxOutputTokens.orPrevious(sameEndpoint?.maxOutputTokens),
             inputModalities = inputModalities.orPrevious(sameEndpoint?.inputModalities),
             outputModalities = outputModalities.orPrevious(sameEndpoint?.outputModalities),
+            catalogType = catalogType.orPrevious(sameEndpoint?.catalogType),
+            supportsTemperature = supportsTemperature.orPrevious(sameEndpoint?.supportsTemperature),
+            supportsStructuredOutput = supportsStructuredOutput.orPrevious(sameEndpoint?.supportsStructuredOutput),
             effortLevels = levels,
             defaultEffort = default?.takeIf { levels?.value?.contains(it.value) != false },
             anthropicSystemPromptUpdate =
@@ -67,6 +77,7 @@ data class AiModelInfo(
 
 /** Scopes user edits and catalog fields to a provider configuration without storing URL credentials. */
 internal fun AiProviderSetting.modelConfigurationKey(): String {
+    if (isWorkBuddyAccountProvider()) return "workbuddy-model:${workBuddyAccountId.orEmpty()}"
     if (isOpenAiAccountProvider()) {
         val account = chatGptAccountId.orEmpty().toByteArray(Charsets.UTF_8)
         val source = if (isCodexSubscription()) "codex-model" else "chatgpt-model"

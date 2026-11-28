@@ -3,8 +3,12 @@ package io.legado.app.ui.config
 import io.legado.app.R
 import io.legado.app.help.ai.AiDefaultProviders
 import io.legado.app.help.ai.AiModel
+import io.legado.app.help.ai.AiModelInfo
+import io.legado.app.help.ai.AiModelValue
 import io.legado.app.help.ai.AiProviderSetting
 import io.legado.app.help.ai.AiProviderType
+import io.legado.app.help.ai.modelConfigurationKey
+import io.legado.app.help.ai.usesAccountLogin
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -16,7 +20,7 @@ class AiModelSelectionTabsTest {
     )
 
     @Test
-    fun providerTabsRequireEnabledAndNonBlankKeyButNotCachedModels() {
+    fun apiKeyProviderTabsRequireUsableCredentialsButNotCachedModels() {
         val base = AiProviderSetting(
             id = "base", type = AiProviderType.OPENAI,
             name = "Base", baseUrl = "https://example.invalid",
@@ -24,6 +28,7 @@ class AiModelSelectionTabsTest {
         val settings = listOf(
             base.copy(id = "no-key", models = listOf(AiModel("cached"))),
             base.copy(id = "blank-key", apiKey = "  "),
+            base.copy(id = "key-for-another-endpoint", apiKey = "key", apiKeyOrigin = "https://other.invalid/"),
             base.copy(id = "disabled", enabled = false, apiKey = "key"),
             base.copy(id = "empty-catalog", apiKey = "key"),
             base.copy(id = "cached", apiKey = "key", models = listOf(AiModel("model"))),
@@ -35,19 +40,85 @@ class AiModelSelectionTabsTest {
     }
 
     @Test
+    fun providerTabsAcceptAccountCredentialsWithoutAnApiKey() {
+        val accounts = AiDefaultProviders.all().filter { it.usesAccountLogin() }
+        val signedInIds = accounts.map { it.id }.toSet()
+        val available = accounts.modelSelectionEligibleProviders { it.id in signedInIds }
+        assertEquals(accounts.map { it.id }, available.map { it.id })
+
+        val signedOutId = AiDefaultProviders.CHATGPT_ID
+        val disabledId = AiDefaultProviders.CODEX_ID
+        val settings = accounts.map { it.copy(enabled = it.id != disabledId) }
+        assertEquals(
+            listOf(AiDefaultProviders.WORK_BUDDY_ID),
+            settings.modelSelectionEligibleProviders { it.id != signedOutId }.map { it.id },
+        )
+    }
+
+    @Test
     fun streamingHintIsOnlyShownWhereStreamingCanBeConfigured() {
         val defaults = AiDefaultProviders.all()
-        val subscription = defaults.first { it.id == AiDefaultProviders.CHATGPT_ID }
+        val accountModels = listOf(
+            AiDefaultProviders.CHATGPT_ID to "gpt-6.2-sol",
+            AiDefaultProviders.CODEX_ID to "gpt-6.2-sol",
+            AiDefaultProviders.WORK_BUDDY_ID to "hy4",
+        )
+        accountModels.forEach { (providerId, modelId) ->
+            val accountProvider = defaults.single { it.id == providerId }
+            val item = accountProvider.toModelSelectionProviderUiModel(
+                listOf(AiModel(modelId)), showGenerationHints = true,
+            ).models.single()
+            assertNull(providerId, item.generationHintRes)
+        }
         val bailian = defaults.first { it.id == "aliyun_bailian" }
-        val chatGptItem = subscription.toModelSelectionProviderUiModel(
-            listOf(AiModel("gpt-6.2-sol")), showGenerationHints = true,
-        ).models.single()
         val bailianItem = bailian.toModelSelectionProviderUiModel(
             listOf(AiModel("qwen3-235b-a22b")), showGenerationHints = true,
         ).models.single()
 
-        assertNull(chatGptItem.generationHintRes)
         assertEquals(R.string.ai_model_streaming_only, bailianItem.generationHintRes)
+    }
+
+    @Test
+    fun modelSelectionShowsSameNameRatesById() {
+        val provider = AiDefaultProviders.all().single { it.id == AiDefaultProviders.WORK_BUDDY_ID }
+        val models = listOf("hy4flash-free" to "0.00", "hy4flash" to "0.03").map { (id, rate) ->
+            AiModel(
+                id = id,
+                name = "Hy4 flash",
+                modelInfo = AiModelInfo(
+                    endpoint = provider.modelConfigurationKey(),
+                    contextWindow = AiModelValue(960_000),
+                    creditMultiplier = rate,
+                ),
+            )
+        }
+        val items = provider.toModelSelectionProviderUiModel(models).models.associateBy { it.id }
+
+        assertEquals("0.00×", items.getValue("hy4flash-free").creditMultiplierLabel)
+        assertEquals("0.03×", items.getValue("hy4flash").creditMultiplierLabel)
+        assertEquals(listOf(960_000, 960_000), items.values.map { it.contextWindow })
+    }
+
+    @Test
+    fun modelSelectionShowsContextWindowsFromAllProviderCatalogsWhenKnown() {
+        AiDefaultProviders.all().forEach { provider ->
+            val items = provider.toModelSelectionProviderUiModel(
+                listOf(
+                    AiModel(
+                        id = "fixture-with-context",
+                        modelInfo = AiModelInfo(
+                            endpoint = provider.modelConfigurationKey(),
+                            contextWindow = AiModelValue(128_000),
+                        ),
+                    ),
+                    AiModel("fixture-without-context"),
+                ),
+            ).models
+
+            assertEquals(provider.id, 128_000, items[0].contextWindow)
+            assertNull(provider.id, items[0].creditMultiplierLabel)
+            assertNull(provider.id, items[1].contextWindow)
+        }
     }
 
     @Test
@@ -80,9 +151,12 @@ class AiModelSelectionTabsTest {
             selectedProviderId = "second", selectedModelId = "shared",
         )
         val target = state.selectedTarget()!!
-        assertEquals(AiModelSelectionPosition("provider:second", 1), target.position(providers))
-        assertEquals(AiModelSelectionPosition("provider:second", 0), target.position(providers.filterModels("Gamma")))
-        assertNull(target.position(providers.filterModels("Alpha")))
+        val third = provider("third", "Third Provider", model("other", "Other"))
+        val ordered = (providers + third).prioritizeDrawerGroup { it.id == target.providerId }
+        assertEquals(listOf("second", "first", "third"), ordered.map { it.id })
+        assertEquals(AiModelSelectionPosition("provider:second", 1), target.position(ordered))
+        assertEquals(AiModelSelectionPosition("provider:second", 0), target.position(ordered.filterModels("Gamma")))
+        assertNull(target.position(ordered.filterModels("Alpha")))
     }
 
     private fun provider(id: String, name: String, vararg models: AiModelSelectionItemUiModel) =

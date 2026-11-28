@@ -42,6 +42,7 @@ import io.legado.app.help.ai.fetchCodexUsage
 import io.legado.app.help.ai.isCodexSubscription
 import io.legado.app.help.ai.CHATGPT_USAGE_URL
 import io.legado.app.help.ai.AiExternalSearchStore
+import io.legado.app.help.ai.AiDefaultProviders
 import io.legado.app.help.ai.AiManager
 import io.legado.app.help.ai.AiManualModelAddResult
 import io.legado.app.help.ai.AiModel
@@ -58,6 +59,10 @@ import io.legado.app.help.ai.AiSkillDefinition
 import io.legado.app.help.ai.AiSkillExistsException
 import io.legado.app.help.ai.AiSkillRegistry
 import io.legado.app.help.ai.AiSkillScope
+import io.legado.app.help.ai.AiWorkBuddyCheckIn
+import io.legado.app.help.ai.AiWorkBuddyCheckInStatus
+import io.legado.app.help.ai.AiWorkBuddyCredits
+import io.legado.app.help.ai.AiWorkBuddyException
 import io.legado.app.help.ai.aiProviderHost
 import io.legado.app.help.ai.apiKeyNeedsReentry
 import io.legado.app.help.ai.assistantContextWindowLabel
@@ -66,18 +71,25 @@ import io.legado.app.help.ai.assistantContextWindowOptions
 import io.legado.app.help.ai.assistantModelChoice
 import io.legado.app.help.ai.capAssistantContextWindow
 import io.legado.app.help.ai.catalogFetchRequired
+import io.legado.app.help.ai.characterCardModel
 import io.legado.app.help.ai.effectiveModelCapabilities
 import io.legado.app.help.ai.effectiveModelInfo
 import io.legado.app.help.ai.hasRequestCredentials
 import io.legado.app.help.ai.isOpenAiAccountProvider
 import io.legado.app.help.ai.isManualModel
+import io.legado.app.help.ai.isWorkBuddyAccountProvider
 import io.legado.app.help.ai.modelConfigurationKey
 import io.legado.app.help.ai.modelPresetProviderId
 import io.legado.app.help.ai.modelSettingsFor
+import io.legado.app.help.ai.openAiCreditGrantsUrl
+import io.legado.app.help.ai.referenceContextWindow
+import io.legado.app.help.ai.usesAccountLogin
 import io.legado.app.help.ai.withCatalogCapabilities
+import io.legado.app.help.ai.workBuddySessions
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.ui.code.CodeEditActivity
 import io.legado.app.ui.design.components.NgStatusTagSpec
+import io.legado.app.ui.design.components.compose.NgFormSelectOption
 import io.legado.app.ui.design.components.NgStatusTagStyle
 import io.legado.app.ui.design.components.NgStatusTagVariant
 import io.legado.app.ui.widget.TitleBar
@@ -101,6 +113,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -116,6 +129,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
         const val PAGE_SEARCH_SERVICES = "searchServices"
         const val PAGE_PROMPTS = "prompts"
         const val PAGE_PURIFY = "purify"
+        const val PAGE_CHARACTER_CARD = "characterCard"
         const val PAGE_READ_ALOUD = "readAloud"
         const val PAGE_ASSISTANT = "assistant"
         private const val ARG_INITIAL_PAGE = "initialPage"
@@ -139,6 +153,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
         PROMPTS,
         PROMPT_DETAIL,
         PURIFY_MODEL_SETTINGS,
+        CHARACTER_CARD_MODEL_SETTINGS,
         READ_ALOUD_MODEL_SETTINGS,
         ASSISTANT_MODEL_SETTINGS,
         PURIFY_SETTINGS
@@ -159,6 +174,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     }
 
     private enum class ProviderDetailTab { CONFIG, MODELS }
+    private enum class WorkBuddyAction { SIGN_IN, SIGN_OUT }
 
     private data class AddModelTarget(val providerId: String, val configurationKey: String)
 
@@ -209,6 +225,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     private var purifyModelSettingsScreenState by mutableStateOf(
         AiPurifyModelSettingsScreenState()
     )
+    private var characterCardSettingsState by mutableStateOf(AiCharacterCardModelSettingsState())
     private var readAloudModelSettingsScreenState by mutableStateOf(
         AiReadAloudModelSettingsScreenState()
     )
@@ -224,6 +241,17 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     private var chatGptSigningIn = false
     private var chatGptSigningOut = false
     private var chatGptNotice: Int? = null
+    private var workBuddyJob: Job? = null
+    private var workBuddyAction: WorkBuddyAction? = null
+    private var workBuddyNotice: String? = null
+    private var workBuddyCreditsJob: Job? = null
+    private var workBuddyCreditsAccountId: String? = null
+    private var workBuddyCredits: AiWorkBuddyCredits? = null
+    private var workBuddyCreditsError: String? = null
+    private var workBuddyCreditsLoading = false
+    private var workBuddyCheckIn: AiWorkBuddyCheckIn? = null
+    private var workBuddyCheckInLoading = false
+    private var workBuddyClaimingCredits = false
     private var codexUsageKey: Pair<String, String?>? = null
     private var codexUsageJob: Job? = null
     private var codexUsage: AiCodexUsage? = null
@@ -263,6 +291,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             PAGE_PROVIDERS -> Page.PROVIDERS
             PAGE_PROMPTS -> Page.PROMPTS
             PAGE_PURIFY -> Page.PURIFY_MODEL_SETTINGS
+            PAGE_CHARACTER_CARD -> Page.CHARACTER_CARD_MODEL_SETTINGS
             PAGE_READ_ALOUD -> Page.READ_ALOUD_MODEL_SETTINGS
             PAGE_ASSISTANT -> Page.ASSISTANT_MODEL_SETTINGS
             else -> Page.MAIN
@@ -271,6 +300,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             Page.PROVIDERS -> showProviderList()
             Page.PROMPTS -> showPromptList()
             Page.PURIFY_MODEL_SETTINGS -> showPurifyModelSettings()
+            Page.CHARACTER_CARD_MODEL_SETTINGS -> showCharacterCardModelSettings()
             Page.READ_ALOUD_MODEL_SETTINGS -> showReadAloudModelSettings()
             Page.ASSISTANT_MODEL_SETTINGS -> showAssistantModelSettings()
             else -> showMain()
@@ -293,6 +323,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
 
     override fun onDestroyView() {
         addModelTarget = null
+        clearWorkBuddyCredits()
         activity?.findViewById<TitleBar>(R.id.title_bar)?.let { titleBar ->
             titleBar.isVisible = true
             titleBar.setTemporarySolidSurface(false)
@@ -347,6 +378,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             binding.composeAssistantModelSettings.isVisible -> Page.ASSISTANT_MODEL_SETTINGS
             binding.composeReadAloudModelSettings.isVisible -> Page.READ_ALOUD_MODEL_SETTINGS
             binding.composePurifyModelSettings.isVisible -> Page.PURIFY_MODEL_SETTINGS
+            binding.composeCharacterCardModelSettings.isVisible -> Page.CHARACTER_CARD_MODEL_SETTINGS
             binding.composePurifySettings.isVisible -> Page.PURIFY_SETTINGS
             binding.composeProviders.isVisible -> Page.PROVIDERS
             else -> Page.MAIN
@@ -360,6 +392,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             Page.PROVIDERS -> showMain()
             Page.PROMPTS -> showMain()
             Page.PURIFY_MODEL_SETTINGS -> showMain()
+            Page.CHARACTER_CARD_MODEL_SETTINGS -> showMain()
             Page.READ_ALOUD_MODEL_SETTINGS -> showMain()
             Page.ASSISTANT_MODEL_SETTINGS -> showMain()
             Page.PURIFY_SETTINGS -> showPurifyModelSettings()
@@ -370,6 +403,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     internal fun usesFloatingSettingsTitleBar(): Boolean = when (currentPage) {
         Page.MAIN,
         Page.PURIFY_MODEL_SETTINGS,
+        Page.CHARACTER_CARD_MODEL_SETTINGS,
         Page.READ_ALOUD_MODEL_SETTINGS,
         Page.ASSISTANT_MODEL_SETTINGS,
         Page.PURIFY_SETTINGS -> true
@@ -443,6 +477,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
 
     private fun showProviderList() {
         if (chatGptSigningIn) chatGptJob?.cancel()
+        if (workBuddyAction == WorkBuddyAction.SIGN_IN) workBuddyJob?.cancel()
         addModelTarget = null
         currentPage = Page.PROVIDERS
         setFeatureComposePage(Page.PROVIDERS)
@@ -524,6 +559,16 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
         refreshModelSettings()
     }
 
+    private fun showCharacterCardModelSettings() {
+        currentPage = Page.CHARACTER_CARD_MODEL_SETTINGS
+        setFeatureComposePage(Page.CHARACTER_CARD_MODEL_SETTINGS)
+        currentProviderId = null
+        currentSkill = null
+        currentPrompt = null
+        setPageTitle(R.string.ai_character_card)
+        refreshModelSettings()
+    }
+
     private fun showAssistantModelSettings() {
         currentPage = Page.ASSISTANT_MODEL_SETTINGS
         setFeatureComposePage(Page.ASSISTANT_MODEL_SETTINGS)
@@ -551,6 +596,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
         binding.composeSkillList.isVisible = page == Page.PROMPTS
         binding.composeSkillDetail.isVisible = page == Page.PROMPT_DETAIL
         binding.composePurifyModelSettings.isVisible = page == Page.PURIFY_MODEL_SETTINGS
+        binding.composeCharacterCardModelSettings.isVisible = page == Page.CHARACTER_CARD_MODEL_SETTINGS
         binding.composeReadAloudModelSettings.isVisible = page == Page.READ_ALOUD_MODEL_SETTINGS
         binding.composeAssistantModelSettings.isVisible = page == Page.ASSISTANT_MODEL_SETTINGS
         binding.composePurifySettings.isVisible = page == Page.PURIFY_SETTINGS
@@ -566,6 +612,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             Page.PROMPTS -> refreshPrompts()
             Page.PROMPT_DETAIL -> refreshPromptDetail()
             Page.PURIFY_MODEL_SETTINGS -> refreshModelSettings()
+            Page.CHARACTER_CARD_MODEL_SETTINGS -> refreshModelSettings()
             Page.READ_ALOUD_MODEL_SETTINGS -> refreshModelSettings()
             Page.ASSISTANT_MODEL_SETTINGS -> refreshModelSettings()
             Page.PURIFY_SETTINGS -> refreshPurifySettings()
@@ -639,21 +686,10 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             skillSummary = aiMenuScreenState.skillSummary,
             chatEntryStyle = AiConfig.chatEntryStyle,
             installedPets = PetPluginStore.installedChoices(),
-            purifySummary = getString(
-                R.string.ai_model_function_summary,
-                purifyModelSummaryText(providers),
-                purifyReasoningSummaryText(providers),
-            ),
-            assistantSummary = getString(
-                R.string.ai_model_function_summary,
-                assistantModelSummaryText(providers),
-                assistantReasoningSummaryText(providers),
-            ),
-            readAloudSummary = getString(
-                R.string.ai_model_function_summary,
-                readAloudStoryboardModelSummaryText(providers),
-                readAloudStoryboardReasoningSummaryText(providers),
-            ),
+            purifySummary = purifyModelSummaryText(providers),
+            characterCardSummary = requireContext().characterCardModelSettingsState(providers).modelSummary,
+            assistantSummary = assistantModelSummaryText(providers),
+            readAloudSummary = readAloudStoryboardModelSummaryText(providers),
         )
     }
 
@@ -806,6 +842,10 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                         modelCountWarning = modelCount == 0,
                         keyConfigured = provider.hasRequestCredentials(),
                         missingCredentialRes = when {
+                            provider.isWorkBuddyAccountProvider() ->
+                                if (workBuddySessions.account(provider.workBuddyAccountId)?.reauthorizationRequired == true) {
+                                    R.string.ai_chatgpt_session_expired
+                                } else R.string.ai_chatgpt_not_signed_in
                             !provider.isOpenAiAccountProvider() -> R.string.ai_provider_no_api_key
                             chatGptAccount?.needsReauthorization() == true -> R.string.ai_chatgpt_session_expired
                             chatGptAccount?.tokens == null -> R.string.ai_chatgpt_not_signed_in
@@ -1010,7 +1050,11 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             providerName = provider.name,
             providerIconRes = provider.iconRes(),
             selectedTab = providerDetailTab.ordinal,
-            chatGpt = if (provider.isOpenAiAccountProvider()) chatGptUiState(provider) else null,
+            chatGpt = when {
+                provider.isWorkBuddyAccountProvider() -> workBuddyUiState(provider)
+                provider.isOpenAiAccountProvider() -> chatGptUiState(provider)
+                else -> null
+            },
         )
         refreshModelList(provider)
         showProviderDetailTab(providerDetailTab)
@@ -1055,6 +1099,26 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     }
 
     private fun initFeatureSettingsCompose() {
+        binding.composeCharacterCardModelSettings.apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                NgAppTheme {
+                    AiCharacterCardModelSettingsScreen(
+                        state = characterCardSettingsState,
+                        onSelectModel = { showComposeModelSelectionSheet(AiModelSelectionTarget.CHARACTER_CARD) },
+                        onSelectReasoning = ::showCharacterCardReasoningDialog,
+                        onConcurrencyLimitChange = { value ->
+                            characterCardSettingsState =
+                                characterCardSettingsState.copy(concurrencyLimit = value)
+                        },
+                        onConcurrencyLimitChangeFinished = {
+                            AiConfig.characterCardConcurrencyLimit =
+                                characterCardSettingsState.concurrencyLimit
+                        },
+                    )
+                }
+            }
+        }
         binding.composePurifyModelSettings.apply {
             setViewCompositionStrategy(
                 ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
@@ -1215,6 +1279,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             PAGE_SEARCH_SERVICES -> (activity as? ConfigActivity)?.openAiConfigPage(page)
             PAGE_PROMPTS -> showPromptList()
             PAGE_PURIFY -> showPurifyModelSettings()
+            PAGE_CHARACTER_CARD -> showCharacterCardModelSettings()
             PAGE_READ_ALOUD -> showReadAloudModelSettings()
             PAGE_ASSISTANT -> showAssistantModelSettings()
         }
@@ -1246,10 +1311,18 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     }
 
     private fun handleProviderDetailAction(action: AiProviderDetailAction) {
+        val workBuddy = currentProviderId == AiDefaultProviders.WORK_BUDDY_ID
         when (action) {
-            is AiProviderDetailAction.ChatGptSignIn -> signInToChatGpt(action.addAccount)
-            AiProviderDetailAction.ChatGptCancelSignIn -> if (chatGptSigningIn) chatGptJob?.cancel()
-            AiProviderDetailAction.ChatGptSignOut -> signOutOfChatGpt()
+            is AiProviderDetailAction.ChatGptSignIn ->
+                if (workBuddy) runWorkBuddyAction(WorkBuddyAction.SIGN_IN) else signInToChatGpt(action.addAccount)
+            AiProviderDetailAction.ChatGptCancelSignIn -> {
+                if (workBuddy && workBuddyAction == WorkBuddyAction.SIGN_IN) workBuddyJob?.cancel()
+                else if (chatGptSigningIn) chatGptJob?.cancel()
+            }
+            AiProviderDetailAction.ChatGptSignOut ->
+                if (workBuddy) runWorkBuddyAction(WorkBuddyAction.SIGN_OUT) else signOutOfChatGpt()
+            is AiProviderDetailAction.WorkBuddyRefreshCredits -> refreshWorkBuddyCredits(action.accountId)
+            is AiProviderDetailAction.WorkBuddyClaimCredits -> refreshWorkBuddyCredits(action.accountId, claim = true)
             AiProviderDetailAction.ChatGptOpenUsage -> {
                 val provider = currentProviderId?.let(AiProviderStore::provider)
                 if (provider?.isCodexSubscription() == true) {
@@ -1276,9 +1349,14 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             }
             is AiProviderDetailAction.ChatGptEnabled -> {
                 val provider = currentProviderId?.let(AiProviderStore::provider)
-                    ?.takeIf { it.isOpenAiAccountProvider() } ?: return
-                AiProviderStore.saveProvider(provider.copy(enabled = action.enabled))
-                refreshChatGptDetail(fetch = action.enabled)
+                    ?.takeIf { it.usesAccountLogin() } ?: return
+                val updated = AiProviderStore.saveProvider(provider.copy(enabled = action.enabled))
+                if (workBuddy) {
+                    refreshCurrentDetail()
+                    if (action.enabled) maybeAutoFetchModels(updated)
+                } else {
+                    refreshChatGptDetail(fetch = action.enabled)
+                }
             }
             is AiProviderDetailAction.TabSelected -> {
                 val tab = ProviderDetailTab.entries[action.index]
@@ -1327,6 +1405,176 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             codexUsage = codexUsage.takeIf { codexUsageKey?.first == provider.chatGptAccountId },
             usageLoading = codexUsageLoading && codexUsageKey?.first == provider.chatGptAccountId,
         )
+
+    private fun workBuddyUiState(provider: AiProviderSetting): AiChatGptProviderUiState {
+        val account = workBuddySessions.account(provider.workBuddyAccountId)
+        val hasCreditsSnapshot = account != null && account.id == workBuddyCreditsAccountId
+        return AiChatGptProviderUiState(
+            currentAccount = account?.let { NgFormSelectOption(it.nickname ?: provider.name, it.id) },
+            planAuthorized = account != null && !account.reauthorizationRequired,
+            needsReauthorization = account?.reauthorizationRequired == true,
+            signingIn = workBuddyAction == WorkBuddyAction.SIGN_IN,
+            signingOut = workBuddyAction == WorkBuddyAction.SIGN_OUT,
+            workBuddy = true,
+            showWorkBuddyCredits = account != null && account.enterpriseId == null,
+            usageLoading = hasCreditsSnapshot && workBuddyCreditsLoading,
+            workBuddyCredits = workBuddyCredits.takeIf { hasCreditsSnapshot },
+            workBuddyCreditsError = workBuddyCreditsError.takeIf { hasCreditsSnapshot },
+            workBuddyCheckIn = workBuddyCheckIn.takeIf { hasCreditsSnapshot },
+            workBuddyCheckInLoading = !hasCreditsSnapshot || workBuddyCheckInLoading,
+            workBuddyClaimingCredits = hasCreditsSnapshot && workBuddyClaimingCredits,
+            noticeText = workBuddyNotice,
+        )
+    }
+
+    private fun refreshWorkBuddyCredits(accountId: String, claim: Boolean = false) {
+        if (providerDetailTab != ProviderDetailTab.CONFIG || workBuddyAction != null) return
+        val provider = visibleWorkBuddyProvider(accountId) ?: return
+        val account = workBuddySessions.account(accountId) ?: return
+        if (account.reauthorizationRequired || account.enterpriseId != null) return
+        if (workBuddyCreditsAccountId != accountId) clearWorkBuddyCredits()
+        if (workBuddyCreditsJob?.isActive == true) return
+        if (claim && workBuddyCheckIn?.status != AiWorkBuddyCheckInStatus.AVAILABLE) return
+        workBuddyCreditsAccountId = accountId
+        workBuddyCreditsError = null
+        workBuddyCreditsLoading = true
+        workBuddyCheckInLoading = !claim
+        workBuddyClaimingCredits = claim
+        providerDetailScreenState = providerDetailScreenState.copy(chatGpt = workBuddyUiState(provider))
+        workBuddyCreditsJob = viewLifecycleOwner.lifecycleScope.launch {
+            if (claim) {
+                val result = try {
+                    workBuddySessions.claimDailyCredits(accountId)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (visibleWorkBuddyProvider(accountId) != null) {
+                        toastOnUi(
+                            (error as? AiWorkBuddyException)?.message
+                                ?: getString(R.string.ai_workbuddy_credits_claim_failed),
+                        )
+                    }
+                    null
+                }
+                if (workBuddyCreditsAccountId != accountId) return@launch
+                workBuddyCheckIn = result?.checkIn
+                workBuddyCheckInLoading = result == null
+                workBuddyClaimingCredits = false
+                publishWorkBuddyCredits(accountId)
+                result?.awardedCredits?.let { credits ->
+                    if (visibleWorkBuddyProvider(accountId) != null) {
+                        toastOnUi(getString(R.string.ai_workbuddy_credits_claim_success, credits))
+                    }
+                }
+            }
+            coroutineScope {
+                launch { loadWorkBuddyBalance(accountId) }
+                if (workBuddyCheckInLoading) launch { loadWorkBuddyCheckInStatus(accountId) }
+            }
+        }
+    }
+
+    private suspend fun loadWorkBuddyBalance(accountId: String) {
+        val result = try {
+            Result.success(workBuddySessions.queryCredits(accountId))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+        if (workBuddyCreditsAccountId != accountId) return
+        workBuddyCreditsLoading = false
+        result.onSuccess { workBuddyCredits = it }.onFailure { error ->
+            workBuddyCreditsError = (error as? AiWorkBuddyException)?.message
+                ?: getString(R.string.ai_workbuddy_credits_unavailable)
+        }
+        publishWorkBuddyCredits(accountId)
+    }
+
+    private suspend fun loadWorkBuddyCheckInStatus(accountId: String) {
+        val checkIn = try {
+            workBuddySessions.queryCheckInStatus(accountId)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+        if (workBuddyCreditsAccountId != accountId) return
+        workBuddyCheckIn = checkIn
+        workBuddyCheckInLoading = false
+        publishWorkBuddyCredits(accountId)
+    }
+
+    private fun visibleWorkBuddyProvider(accountId: String): AiProviderSetting? {
+        if (currentPage != Page.DETAIL || currentProviderId != AiDefaultProviders.WORK_BUDDY_ID) return null
+        return AiProviderStore.provider(AiDefaultProviders.WORK_BUDDY_ID)
+            ?.takeIf { it.workBuddyAccountId == accountId }
+    }
+
+    private fun publishWorkBuddyCredits(accountId: String) {
+        visibleWorkBuddyProvider(accountId)?.let { provider ->
+            providerDetailScreenState = providerDetailScreenState.copy(chatGpt = workBuddyUiState(provider))
+        }
+    }
+
+    private fun clearWorkBuddyCredits() {
+        workBuddyCreditsJob?.cancel()
+        workBuddyCreditsJob = null
+        workBuddyCreditsAccountId = null
+        workBuddyCredits = null
+        workBuddyCreditsError = null
+        workBuddyCreditsLoading = false
+        workBuddyCheckIn = null
+        workBuddyCheckInLoading = false
+        workBuddyClaimingCredits = false
+    }
+
+    private fun runWorkBuddyAction(action: WorkBuddyAction) {
+        if (workBuddyJob?.isActive == true || workBuddyClaimingCredits) return
+        val provider = currentProviderId?.let(AiProviderStore::provider)
+            ?.takeIf { it.isWorkBuddyAccountProvider() } ?: return
+        clearWorkBuddyCredits()
+        workBuddyAction = action
+        workBuddyNotice = null
+        refreshCurrentDetail()
+        workBuddyJob = viewLifecycleOwner.lifecycleScope.launch {
+            var fetch = false
+            try {
+                when (action) {
+                    WorkBuddyAction.SIGN_IN -> {
+                        val account = workBuddySessions.signIn { url ->
+                            try {
+                                openChatGptBrowser(url)
+                            } catch (_: AiChatGptException) {
+                                throw AiWorkBuddyException(R.string.ai_workbuddy_browser_unavailable)
+                            }
+                        }
+                        AiProviderStore.selectWorkBuddyAccount(account.id)
+                        fetch = true
+                    }
+                    WorkBuddyAction.SIGN_OUT -> {
+                        workBuddySessions.signOut(provider.workBuddyAccountId)
+                        AiProviderStore.selectWorkBuddyAccount(null)
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                workBuddyNotice = (error as? AiWorkBuddyException)?.message
+                    ?: getString(R.string.ai_workbuddy_connection_failed)
+            } finally {
+                workBuddyAction = null
+                if (isAdded && view != null && viewLifecycleOwner.lifecycle.currentState != Lifecycle.State.DESTROYED) {
+                    if (currentProviderId == provider.id && currentPage == Page.DETAIL) {
+                        refreshCurrentDetail()
+                        if (fetch && isActive) AiProviderStore.provider(provider.id)?.let(::maybeAutoFetchModels)
+                    } else if (currentPage == Page.PROVIDERS) {
+                        refreshProviders()
+                    }
+                }
+            }
+        }
+    }
 
     private fun openChatGptBrowser(url: String) {
         try {
@@ -2101,6 +2349,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     }
 
     private fun refreshModelSettings() {
+        characterCardSettingsState = requireContext().characterCardModelSettingsState(AiProviderStore.providers())
         val reasoningEnabled = selectedPurifyModel()?.model?.supportsReasoning() == true
         val readAloudReasoningEnabled =
             selectedReadAloudStoryboardModel()?.model?.supportsReasoning() == true
@@ -2326,6 +2575,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
 
     private enum class AiModelSelectionTarget {
         PURIFY,
+        CHARACTER_CARD,
         READ_ALOUD,
         ASSISTANT,
     }
@@ -2337,18 +2587,23 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             return assistantModelSelectionProviders()
         }
         return AiProviderStore.providers().modelSelectionEligibleProviders().map { provider ->
-            provider.toModelSelectionProviderUiModel(provider.purifyEligibleModels())
+            val models = if (target == AiModelSelectionTarget.CHARACTER_CARD) {
+                provider.displayModels().mapNotNull { provider.characterCardModel(it.safeId()) }
+            } else provider.purifyEligibleModels()
+            provider.toModelSelectionProviderUiModel(models)
         }
     }
 
     private fun showComposeModelSelectionSheet(target: AiModelSelectionTarget) {
         val selectedProviderId = when (target) {
             AiModelSelectionTarget.PURIFY -> AiConfig.purifyProviderId
+            AiModelSelectionTarget.CHARACTER_CARD -> AiConfig.characterCardProviderId
             AiModelSelectionTarget.READ_ALOUD -> AiConfig.readAloudStoryboardProviderId
             AiModelSelectionTarget.ASSISTANT -> AiConfig.assistantProviderId
         }
         val selectedModelId = when (target) {
             AiModelSelectionTarget.PURIFY -> AiConfig.purifyModelId
+            AiModelSelectionTarget.CHARACTER_CARD -> AiConfig.characterCardModelId
             AiModelSelectionTarget.READ_ALOUD -> AiConfig.readAloudStoryboardModelId
             AiModelSelectionTarget.ASSISTANT -> AiConfig.assistantModelId
         }
@@ -2358,6 +2613,8 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             emptyText = when (target) {
                 AiModelSelectionTarget.ASSISTANT ->
                     getString(R.string.ai_assistant_model_empty)
+                AiModelSelectionTarget.CHARACTER_CARD ->
+                    getString(R.string.ai_character_card_model_empty)
                 else -> getString(R.string.ai_purify_model_empty)
             },
             providers = modelSelectionProviders(target),
@@ -2400,6 +2657,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                     onClear = {
                         when (target) {
                             AiModelSelectionTarget.PURIFY -> AiConfig.clearPurifyModel()
+                            AiModelSelectionTarget.CHARACTER_CARD -> AiConfig.clearCharacterCardModel()
                             AiModelSelectionTarget.READ_ALOUD -> AiConfig.clearReadAloudStoryboardModel()
                             AiModelSelectionTarget.ASSISTANT -> AiConfig.clearAssistantModel()
                         }
@@ -2409,6 +2667,13 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                         when (target) {
                             AiModelSelectionTarget.PURIFY -> {
                                 AiConfig.savePurifyModel(providerId, modelId)
+                            }
+                            AiModelSelectionTarget.CHARACTER_CARD -> {
+                                if (!AiConfig.saveCharacterCardModel(providerId, modelId)) {
+                                    toastOnUi(R.string.ai_purify_model_unavailable)
+                                    sheetState = sheetState.copy(providers = modelSelectionProviders(target))
+                                    return@select
+                                }
                             }
                             AiModelSelectionTarget.READ_ALOUD -> {
                                 AiConfig.saveReadAloudStoryboardModel(providerId, modelId)
@@ -2499,6 +2764,21 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                 AiConfig.assistantContextWindowTokens = value
                 refreshModelSettings()
             }
+        }
+    }
+
+    private fun showCharacterCardReasoningDialog() {
+        if (!characterCardSettingsState.reasoningAvailable) {
+            toastOnUi(characterCardSettingsState.reasoningSummary)
+            return
+        }
+        showReasoningLevelDialog(
+            title = getString(R.string.ai_purify_reasoning_title),
+            currentLevel = AiConfig.characterCardReasoningLevel,
+            iconTintWhenOff = true,
+        ) { level ->
+            AiConfig.characterCardReasoningLevel = level
+            refreshModelSettings()
         }
     }
 
@@ -2706,7 +2986,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
 
     private fun maybeAutoFetchModels(provider: AiProviderSetting) {
         if (providerDetailScreenState.isRefreshingModels) return
-        if (provider.isOpenAiAccountProvider() && !provider.enabled) return
+        if (provider.usesAccountLogin() && !provider.enabled) return
         val hasInitializedModels = !provider.catalogFetchRequired() &&
             (provider.catalogLoaded || provider.availableModelSelectionInitialized)
         if (
@@ -2724,7 +3004,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     private fun fetchModels() {
         if (providerDetailScreenState.isRefreshingModels) return
         providerDetailScreenState = providerDetailScreenState.copy(isRefreshingModels = true)
-        val provider = currentProviderId?.let(AiProviderStore::provider)?.takeIf { it.isOpenAiAccountProvider() }
+        val provider = currentProviderId?.let(AiProviderStore::provider)?.takeIf { it.usesAccountLogin() }
             ?: saveCurrentProvider()
         if (provider == null) {
             providerDetailScreenState = providerDetailScreenState.copy(isRefreshingModels = false)
@@ -2736,6 +3016,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                 title = getString(R.string.ai_fetch_models),
                 message = getString(
                     when {
+                        provider.isWorkBuddyAccountProvider() -> R.string.ai_workbuddy_sign_in_required
                         provider.isOpenAiAccountProvider() -> R.string.ai_chatgpt_sign_in_required
                         provider.apiKeyNeedsReentry() -> R.string.ai_api_key_wrong_origin
                         else -> R.string.ai_api_key_required
@@ -2789,6 +3070,11 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                     )
                     return@launch
                 }
+                if (current.isWorkBuddyAccountProvider() && error is AiWorkBuddyException) {
+                    refreshCurrentDetail()
+                    showAiClassicDialog(title = getString(R.string.ai_model_refresh_failed), message = error.message)
+                    return@launch
+                }
                 showAiClassicDialog(
                     title = getString(R.string.ai_model_refresh_failed),
                     message = if (current.catalogLoaded || current.models.isNotEmpty()) {
@@ -2807,7 +3093,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
                 )
                 if (isActive && isAdded && currentPage == Page.DETAIL) {
                     val current = currentProviderId?.let(AiProviderStore::provider)
-                    if (current != null && (providerDetailTab == ProviderDetailTab.MODELS || current.isOpenAiAccountProvider()) &&
+                    if (current != null && (providerDetailTab == ProviderDetailTab.MODELS || current.usesAccountLogin()) &&
                         (current.id != provider.id || current.catalogRevision != provider.catalogRevision)) {
                         maybeAutoFetchModels(current)
                     }
@@ -2852,6 +3138,14 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
 
     private fun queryBalance() {
         val provider = saveCurrentProvider() ?: return
+        provider.openAiCreditGrantsUrl()?.let { url ->
+            try {
+                openChatGptBrowser(url)
+            } catch (_: AiChatGptException) {
+                toastOnUi(R.string.ai_openai_credit_grants_browser_unavailable)
+            }
+            return
+        }
         if (provider.apiKey.isBlank()) {
             showAiClassicDialog(
                 title = getString(R.string.ai_query_balance),
@@ -2978,34 +3272,36 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
     }
 
     private fun refreshModelList(provider: AiProviderSetting?) {
-        val modelSource = provider?.modelConfigurationKey()
-        val presetProvider = provider?.modelPresetProviderId()
-        val catalogCurrent = provider?.catalogRefreshRequired == false
-        val selectedIds = provider?.effectiveAvailableModelIds().orEmpty().toSet()
-        val providerIconRes = provider?.iconRes() ?: R.drawable.ic_cfg_web
-        val models = provider?.displayModels().orEmpty().sortSelectedModelsFirst(selectedIds).map { model ->
-            val catalogInfo = modelSource?.let { model.effectiveModelInfo(it, presetProvider, catalogCurrent) }
-            val effective = model.withCatalogCapabilities(catalogInfo)
-            val contextWindow = model.modelSettingsFor(modelSource)?.referenceContextWindow(catalogInfo)
-                ?: catalogInfo?.contextWindow?.value
-            AiProviderModelItemUiModel(
-                id = model.safeId(),
-                name = model.displayName(),
-                iconRes = model.iconRes(providerIconRes),
-                capabilities = effective.capabilityTags(),
-                selected = model.safeId() in selectedIds,
-                type = effective.providerListType(modelSource),
-                searchAliases = listOf(model.safeName(), model.safeOwnedBy()),
-                contextWindowLabel = contextWindow?.let { tokens ->
-                    getString(R.string.ai_catalog_context_badge, assistantContextWindowLabel(tokens))
-                },
-                isManual = modelSource != null && model.manualModelEndpoint == modelSource,
-            )
-        }
+        val models = provider?.run {
+            val modelSource = modelConfigurationKey()
+            val presetProvider = modelPresetProviderId()
+            val selectedIds = effectiveAvailableModelIds().toSet()
+            val providerIconRes = iconRes()
+            displayModels().sortSelectedModelsFirst(selectedIds).map { model ->
+                val catalogInfo = effectiveModelInfo(model, modelSource, presetProvider)
+                val effective = model.withCatalogCapabilities(catalogInfo)
+                AiProviderModelItemUiModel(
+                    id = model.safeId(),
+                    name = model.displayName(),
+                    iconRes = model.iconRes(providerIconRes),
+                    capabilities = effective.capabilityTags(),
+                    selected = model.safeId() in selectedIds,
+                    type = effective.providerListType(modelSource),
+                    searchAliases = listOf(model.safeName(), model.safeOwnedBy()),
+                    contextWindowLabel = model.referenceContextWindow(catalogInfo)?.let { tokens ->
+                        getString(R.string.ai_catalog_context_badge, assistantContextWindowLabel(tokens))
+                    },
+                    creditMultiplierLabel = catalogInfo.creditMultiplierLabel,
+                    isManual = model.manualModelEndpoint == modelSource,
+                )
+            }
+        }.orEmpty()
         providerDetailScreenState = providerDetailScreenState.copy(
             modelFilter = providerDetailScreenState.modelFilter.orAllFor(models),
             emptyModelNoticeRes = when {
                 provider?.apiKeyNeedsReentry() == true -> R.string.ai_api_key_wrong_origin
+                provider?.isWorkBuddyAccountProvider() == true && !provider.hasRequestCredentials() ->
+                    R.string.ai_workbuddy_sign_in_required
                 provider?.isOpenAiAccountProvider() == true && !provider.hasRequestCredentials() ->
                     R.string.ai_chatgpt_sign_in_required
                 provider?.catalogRefreshRequired == true && provider.hasRequestCredentials() ->
@@ -3057,6 +3353,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             AiModelType.ASR -> listOf(AiModelModality.AUDIO)
             AiModelType.TTS -> listOf(AiModelModality.TEXT)
             AiModelType.OCR -> listOf(AiModelModality.TEXT, AiModelModality.IMAGE)
+            AiModelType.OTHER -> emptyList()
         }
     }
 
@@ -3082,6 +3379,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             AiModelType.ASR,
             AiModelType.OCR -> listOf(AiModelModality.TEXT)
             AiModelType.TTS -> listOf(AiModelModality.AUDIO)
+            AiModelType.OTHER -> emptyList()
         }
     }
 
@@ -3098,6 +3396,7 @@ class AiConfigFragment : BaseFragment(R.layout.fragment_ai_config), ConfigBackHa
             AiModelType.IMAGE,
             AiModelType.EMBEDDING,
             AiModelType.OCR,
+            AiModelType.OTHER,
             AiModelType.VIDEO -> emptyList()
             AiModelType.ASR -> listOf(AiModelAbility.ASR)
             AiModelType.TTS -> listOf(AiModelAbility.TTS)

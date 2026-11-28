@@ -23,6 +23,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.EpubLayoutPreferences
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.config.ReadBookConfig
+import io.legado.app.help.config.ReadCharacterMarkSettings
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
@@ -32,6 +33,7 @@ import io.legado.app.ui.book.read.epub.EpubLayoutController
 import io.legado.app.ui.book.read.epub.EpubAnimationFrames
 import io.legado.app.ui.book.read.epub.EpubStartupTiming
 import io.legado.app.ui.book.read.createBookmark
+import io.legado.app.ui.book.read.CharacterNameMarks
 import io.legado.app.ui.book.read.createTextHighlight
 import io.legado.app.ui.book.read.page.api.DataSource
 import io.legado.app.ui.book.read.page.api.ReaderContentEditTarget
@@ -56,6 +58,7 @@ import io.legado.app.ui.book.read.page.provider.LayoutProgressListener
 import io.legado.app.ui.book.read.page.provider.NativeReaderSelectionSource
 import io.legado.app.ui.book.read.page.provider.NativeTextHighlightResolver
 import io.legado.app.ui.book.read.page.provider.TextPageFactory
+import io.legado.app.ui.design.components.view.NgBackdropSourceLayout
 import io.legado.app.utils.activity
 import io.legado.app.utils.invisible
 import io.legado.app.utils.longToastOnUi
@@ -85,6 +88,15 @@ class ReadView(context: Context, attrs: AttributeSet) :
     val prevPage by lazy { PageView(context) }
     val curPage by lazy { PageView(context) }
     val nextPage by lazy { PageView(context) }
+    // Anchor the glass to the page without drawing titles, text, or reader chrome into it.
+    internal val liquidGlassBackdropSource: View = object : NgBackdropSourceLayout(context) {
+        override fun drawForBackdrop(canvas: Canvas) {
+            curPage.drawPageBackground(canvas)
+        }
+    }.apply {
+        id = R.id.ng_liquid_glass_backdrop_source
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
     private val nativeSelectionSource: ReaderSelectionSource by lazy { NativeReaderSelectionSource(this) }
     private val selectionSource: ReaderSelectionSource
         get() = epubLayout?.takeIf { it.active } ?: nativeSelectionSource
@@ -92,6 +104,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
     private var openingTiming = if (io.legado.app.BuildConfig.DEBUG) EpubStartupTiming("reader").also { it.mark("created") } else null
     private var textSelectAble = AppConfig.textSelectAble
     private var textHighlights: List<Bookmark> = emptyList()
+    private var characterNames = CharacterNameMarks.empty
     private val epubViewport = Rect()
     private var epubPointerSequence = false
     private var epubCover = false
@@ -303,6 +316,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
                 highlightClick = { bookmark, x, top, bottom ->
                     callBack.onTextHighlightClick(bookmark, x, top, bottom)
                 },
+                characterClick = callBack::onCharacterNameClick,
                 imageLongPress = { x, y, src -> (activity as? ReadBookActivity)?.onImageLongPress(x, y, src) },
                 openingPreparation = { (activity as? ReadBookActivity)?.epubOpeningPreparation },
                 openingPreview = { (activity as? ReadBookActivity)?.epubOpeningPreview },
@@ -311,6 +325,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
         epubLayout?.bind(ReadBook.book, currentChapter)
         epubLayout?.setSelectionEnabled(textSelectAble)
         epubLayout?.setTextHighlights(textHighlights)
+        epubLayout?.setCharacterNames(characterNames)
         epubLayout?.syncAloudHighlight()
         if (epubLayout?.active != true) { epubCover = false; curPage.setLayoutPageLabel(0, 0) }
         curPage.contentViewport.visibility = if (epubLayout?.active == true) INVISIBLE else VISIBLE
@@ -402,6 +417,10 @@ class ReadView(context: Context, attrs: AttributeSet) :
             upPageAnim()
             upPageSlopSquare()
         }
+        addView(
+            liquidGlassBackdropSource,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
+        )
         addView(nextPage)
         addView(curPage)
         addView(prevPage)
@@ -686,6 +705,22 @@ class ReadView(context: Context, attrs: AttributeSet) :
         curPage.upStatusBar()
         prevPage.upStatusBar()
         nextPage.upStatusBar()
+    }
+
+    internal fun setCharacterNames(marks: CharacterNameMarks) {
+        if (characterNames.sameEntriesAs(marks)) return
+        characterNames = marks
+        epubLayout?.setCharacterNames(marks)
+        curPage.setCharacterNames(marks)
+        prevPage.setCharacterNames(marks)
+        nextPage.setCharacterNames(marks)
+    }
+
+    internal fun setCharacterMarkSettings(settings: ReadCharacterMarkSettings) {
+        epubLayout?.setCharacterMarkSettings(settings)
+        curPage.setCharacterMarkSettings(settings)
+        prevPage.setCharacterMarkSettings(settings)
+        nextPage.setCharacterMarkSettings(settings)
     }
 
     fun setTextHighlights(bookmarks: List<Bookmark>) {
@@ -1078,6 +1113,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
         curPage.upBg()
         prevPage.upBg()
         nextPage.upBg()
+        liquidGlassBackdropSource.invalidate()
         // EPUB draws the background in this view's drawChild, outside the PageView display list.
         invalidate()
     }
@@ -1089,6 +1125,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
         curPage.upBgAlpha()
         prevPage.upBgAlpha()
         nextPage.upBgAlpha()
+        liquidGlassBackdropSource.invalidate()
         invalidate()
     }
 
@@ -1370,6 +1407,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
         fun upSelectedStart(x: Float, y: Float, top: Float)
         fun upSelectedEnd(x: Float, y: Float)
         fun onCancelSelect()
+        fun onCharacterNameClick(characterId: Long)
         fun onTextHighlightClick(bookmark: Bookmark, anchorX: Float, top: Float, bottom: Float)
     }
 }

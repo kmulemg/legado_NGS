@@ -1,5 +1,7 @@
 package io.legado.app.ui.config
 
+import android.content.Context
+
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,6 +22,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -31,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import io.legado.app.R
 import io.legado.app.help.ai.AiConfig
 import io.legado.app.help.ai.AiExternalSearchSettings
+import io.legado.app.help.ai.AiProviderSetting
 import io.legado.app.ui.design.components.NgSettingsTrailing
 import io.legado.app.ui.design.components.compose.NgDockSlider
 import io.legado.app.ui.design.components.compose.NgExpandableSettingsItem
@@ -38,6 +42,7 @@ import io.legado.app.ui.design.components.compose.NgExpandableSettingsItemVarian
 import io.legado.app.ui.design.components.compose.NgFormControlGroup
 import io.legado.app.ui.design.components.compose.NgFormGroupDivider
 import io.legado.app.ui.design.components.compose.NgFormNumberSettingRow
+import io.legado.app.ui.design.components.compose.NgFormNumberSettingRowVariant
 import io.legado.app.ui.design.components.compose.NgFormPanelSectionTitle
 import io.legado.app.ui.design.components.compose.NgFormSwitchSettingRow
 import io.legado.app.ui.design.components.compose.NgSettingsGroup
@@ -88,6 +93,94 @@ internal fun AiPurifyModelSettingsScreen(
             iconRes = R.drawable.ic_ai_purify,
             onClick = { onAction(AiPurifyModelSettingsAction.OpenSettings) },
         )
+    }
+}
+
+@Immutable
+internal data class AiCharacterCardModelSettingsState(
+    val modelSummary: String = "",
+    val reasoningSummary: String = "",
+    val reasoningAvailable: Boolean = false,
+    val concurrencyLimit: Int = AiConfig.DEFAULT_CHARACTER_CARD_CONCURRENCY_LIMIT,
+)
+
+internal fun Context.characterCardModelSettingsState(
+    providers: List<AiProviderSetting>,
+): AiCharacterCardModelSettingsState {
+    val selected = AiConfig.selectedCharacterCardModel(providers)
+    val modelSummary = when {
+        selected != null -> getString(
+            R.string.ai_purify_model_selected_summary,
+            selected.model.displayName(),
+            selected.provider.name,
+        )
+        AiConfig.characterCardModelId.isBlank() -> getString(R.string.ai_purify_model_not_selected)
+        else -> getString(R.string.ai_purify_model_unavailable)
+    }
+    val reasoningAvailable = selected?.model?.supportsReasoning() == true
+    val reasoningSummary = when {
+        selected == null -> getString(R.string.ai_purify_reasoning_select_model_first)
+        !reasoningAvailable -> getString(R.string.ai_purify_reasoning_unsupported)
+        else -> AiConfig.characterCardReasoningLevel.displayName(this)
+    }
+    return AiCharacterCardModelSettingsState(
+        modelSummary = modelSummary,
+        reasoningSummary = reasoningSummary,
+        reasoningAvailable = reasoningAvailable,
+        concurrencyLimit = AiConfig.characterCardConcurrencyLimit,
+    )
+}
+
+@Composable
+internal fun AiCharacterCardModelSettingsScreen(
+    state: AiCharacterCardModelSettingsState,
+    onSelectModel: () -> Unit,
+    onSelectReasoning: () -> Unit,
+    onConcurrencyLimitChange: (Int) -> Unit,
+    onConcurrencyLimitChangeFinished: () -> Unit,
+) {
+    var concurrencyExpanded by rememberSaveable { mutableStateOf(false) }
+    val concurrencyTitle = stringResource(R.string.ai_character_card_concurrency_limit)
+    val range = AiConfig.CHARACTER_CARD_CONCURRENCY_RANGE
+    AiSingleGroupSettingsScreen {
+        AiSettingsEntry(
+            title = stringResource(R.string.ai_character_card_model),
+            summary = state.modelSummary,
+            iconRes = R.drawable.ic_read_menu_characters,
+            summaryMaxLines = 2,
+            onClick = onSelectModel,
+        )
+        AiSettingsEntry(
+            title = stringResource(R.string.ai_purify_reasoning_level),
+            summary = state.reasoningSummary,
+            iconRes = R.drawable.ic_ai_capability_reasoning,
+            modifier = Modifier.alpha(if (state.reasoningAvailable) 1f else 0.55f),
+            onClick = onSelectReasoning,
+        )
+        NgExpandableSettingsItem(
+            title = concurrencyTitle,
+            summary = stringResource(
+                R.string.ai_character_card_concurrency_limit_summary,
+                state.concurrencyLimit,
+            ),
+            expanded = concurrencyExpanded,
+            onExpandedChange = { concurrencyExpanded = it },
+            variant = NgExpandableSettingsItemVariant.REGULAR_LEADING,
+            leadingIconRes = R.drawable.ic_ai,
+        ) {
+            NgDockSlider(
+                title = concurrencyTitle,
+                valueText = state.concurrencyLimit.toString(),
+                minimumText = range.first.toString(),
+                maximumText = range.last.toString(),
+                value = state.concurrencyLimit.toFloat(),
+                valueRange = range.first.toFloat()..range.last.toFloat(),
+                steps = range.last - range.first - 1,
+                variant = NgSliderVariant.DISCRETE,
+                onValueChange = { onConcurrencyLimitChange(it.roundToInt()) },
+                onValueChangeFinished = onConcurrencyLimitChangeFinished,
+            )
+        }
     }
 }
 
@@ -580,6 +673,7 @@ private fun AiPurifyNumberFormRow(
         onValueChange = {
             onAction(AiPurifySettingsAction.NumberChanged(field, it))
         },
+        valueWidth = 56.dp * LocalDensity.current.fontScale.coerceAtLeast(1f),
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Number,
             imeAction = ImeAction.Done,
@@ -595,5 +689,6 @@ private fun AiPurifyNumberFormRow(
         onFocusLost = {
             onAction(AiPurifySettingsAction.NumberFocusLost(field))
         },
+        variant = NgFormNumberSettingRowVariant.COMPACT_CHEVRONS,
     )
 }

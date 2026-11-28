@@ -18,7 +18,8 @@ data class AiModelReasoningOptions(
 object AiModelRegistry {
 
     fun shouldClearDeclaredCapabilities(modelId: String): Boolean {
-        return modelId.equals("sensenova-u1-fast", ignoreCase = true)
+        return modelId.equals("sensenova-u1-fast", ignoreCase = true) ||
+            modelId.equals("agnes-sys1-1.0", ignoreCase = true)
     }
 
     private val GPT4O = defineAiModel {
@@ -923,8 +924,13 @@ object AiModelRegistry {
         tokens("hunyuan", "mt")
     }
 
-    private val HY4_PREVIEW = defineAiModel {
-        tokens("hy", "4", "preview")
+    private val HY3 = defineAiModel {
+        tokens("hy", "3")
+        toolReasoningAbility()
+    }
+
+    private val HY4 = defineAiModel {
+        tokens("hy", "4")
         toolReasoningAbility()
     }
 
@@ -988,6 +994,21 @@ object AiModelRegistry {
     private val BGE_RERANKER = defineAiModel {
         tokens("bge", "reranker")
         textEmbedding()
+    }
+
+    private val AGNES_TEXT_MODELS = listOf(
+        "agnes-3.0-flash", "agnes-3.0-pro", "agnes-2.5-flash", "agnes-2.5-pro",
+        "agnes-2.5-pro-alpha", "agnes-2.5-pro-beta", "agnes-2.5-pro-theta",
+    ).map { id -> defineAiModel { exact(id) } }
+
+    private val AGNES_IMAGE = defineAiModel {
+        tokens("agnes", "image")
+        imageEditOutput()
+    }
+
+    private val AGNES_VIDEO = defineAiModel {
+        tokens("agnes", "video")
+        imageToVideo()
     }
 
     private val KOLORS_IMAGE = defineAiModel {
@@ -1250,7 +1271,8 @@ object AiModelRegistry {
         LING_3_TINY,
         HUNYUAN_A13B,
         HUNYUAN_MT,
-        HY4_PREVIEW,
+        HY3,
+        HY4,
         HY_MT2_PRO,
         SEED_OSS,
         SENSENOVA_6_7_FLASH_LITE,
@@ -1264,6 +1286,8 @@ object AiModelRegistry {
         BGE_EMBEDDING,
         BGE_RERANKER,
         KOLORS_IMAGE,
+        AGNES_IMAGE,
+        AGNES_VIDEO,
         WAN_TEXT_TO_VIDEO,
         WAN_IMAGE_TO_VIDEO,
         WAN_FIRST_LAST_FRAME_TO_VIDEO,
@@ -1284,7 +1308,7 @@ object AiModelRegistry {
         HY_IMAGE_3_5,
         GROK_VOICE_TRANSCRIBE,
         GPT_TRANSCRIBE
-    ) + OPENAI_TEXT_EMBEDDINGS
+    ) + OPENAI_TEXT_EMBEDDINGS + AGNES_TEXT_MODELS
 
     private val DEEPSEEK_REASONING_MODELS = setOf(
         DEEPSEEK_R1_MODEL,
@@ -1311,6 +1335,20 @@ object AiModelRegistry {
     )
 
     fun capabilities(modelId: String): AiModelCapabilities {
+        val specialized = openAiSpecializedModelPreset(modelId.substringAfterLast('/'))
+        val specializedType = specialized?.type
+        if (specialized != null && specializedType != null && specializedType != AiModelType.CHAT) {
+            return AiModelCapabilities(
+                type = specializedType,
+                inputModalities = specialized.inputModalities.orEmpty().map { AiModelModality.valueOf(it.uppercase()) },
+                outputModalities = specialized.outputModalities.orEmpty().map { AiModelModality.valueOf(it.uppercase()) },
+                abilities = when (specializedType) {
+                    AiModelType.ASR -> listOf(AiModelAbility.ASR)
+                    AiModelType.TTS -> listOf(AiModelAbility.TTS)
+                    else -> emptyList()
+                },
+            )
+        }
         val matches = if (isOcrModel(modelId)) listOf(OCR_MODEL) else resolveModels(modelId)
         val abilities = resolveAbilities(matches)
         return AiModelCapabilities(

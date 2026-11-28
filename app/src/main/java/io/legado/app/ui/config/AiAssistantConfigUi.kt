@@ -48,14 +48,16 @@ import io.legado.app.help.ai.AiReasoningLevel
 import io.legado.app.help.ai.ENABLE_REASONING_CHOICE
 import io.legado.app.help.ai.assistantModelChoice
 import io.legado.app.help.ai.assistantModelChoices
-import io.legado.app.help.ai.apiKeyNeedsReentry
 import io.legado.app.help.ai.hasRequestCredentials
-import io.legado.app.help.ai.isOpenAiAccountProvider
 import io.legado.app.help.ai.catalogFetchRequired
+import io.legado.app.help.ai.effectiveModelInfo
 import io.legado.app.help.ai.isTextChatModel
 import io.legado.app.help.ai.missingCatalogModelName
+import io.legado.app.help.ai.modelPresetProviderId
 import io.legado.app.help.ai.reasoningBudgetChoice
+import io.legado.app.help.ai.referenceContextWindow
 import io.legado.app.help.ai.resolveModelGenerationRoute
+import io.legado.app.help.ai.usesAccountLogin
 import io.legado.app.help.config.NgThemeRuntimeAssets
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.ui.design.components.compose.NgDrawerContentCardStyle
@@ -929,12 +931,12 @@ internal fun createModelCapabilityTag(
 internal fun AiProviderSetting.assistantEligibleModels(): List<AiModel> =
     assistantModelChoices().map { it.model }
 
-internal fun List<AiProviderSetting>.modelSelectionEligibleProviders(): List<AiProviderSetting> {
-    return filter { it.enabled && it.apiKey.isNotBlank() && !it.apiKeyNeedsReentry() }
-}
+internal fun List<AiProviderSetting>.modelSelectionEligibleProviders(
+    hasCredentials: (AiProviderSetting) -> Boolean = AiProviderSetting::hasRequestCredentials,
+): List<AiProviderSetting> = filter { it.enabled && hasCredentials(it) }
 
 internal fun assistantModelSelectionProviders(): List<AiModelSelectionProviderUiModel> {
-    return AiProviderStore.enabledProviders().filter { it.hasRequestCredentials() }
+    return AiProviderStore.providers().modelSelectionEligibleProviders()
         .map { it.toAssistantModelSelectionProviderUiModel() }
 }
 
@@ -953,12 +955,16 @@ internal fun AiProviderSetting.toModelSelectionProviderUiModel(
     textTrialIds: Set<String> = emptySet(),
     showGenerationHints: Boolean = false,
 ): AiModelSelectionProviderUiModel {
+    val modelSource = modelConfigurationKey()
+    val presetProvider = modelPresetProviderId()
+    val catalogCurrent = !catalogRefreshRequired
     return AiModelSelectionProviderUiModel(
         id = id,
         name = name,
         iconRes = iconRes(),
         models = eligibleModels.map { model ->
             val route = if (showGenerationHints) resolveModelGenerationRoute(model) else null
+            val info = model.effectiveModelInfo(modelSource, presetProvider, catalogCurrent)
             AiModelSelectionItemUiModel(
                 id = model.safeId(),
                 name = model.displayName(),
@@ -966,9 +972,11 @@ internal fun AiProviderSetting.toModelSelectionProviderUiModel(
                 iconRes = model.iconRes(iconRes()),
                 capabilities = model.capabilityTags(),
                 textTrial = model.id in textTrialIds,
+                contextWindow = model.referenceContextWindow(info),
+                creditMultiplierLabel = info.creditMultiplierLabel,
                 generationHintRes = when {
                     route?.issue == AiModelGenerationIssue.UNSUPPORTED_PROTOCOL -> R.string.ai_model_interface_unavailable
-                    route?.requiresStreaming == true && !isOpenAiAccountProvider() -> R.string.ai_model_streaming_only
+                    route?.requiresStreaming == true && !usesAccountLogin() -> R.string.ai_model_streaming_only
                     else -> null
                 },
             )
@@ -1051,6 +1059,7 @@ internal fun AiModel.capabilityTags(): List<ModelCapabilityTag> {
 internal fun AiProviderSetting.iconRes(): Int {
     return when (id) {
         "openai" -> R.drawable.ic_provider_openai
+        AiDefaultProviders.WORK_BUDDY_ID -> R.drawable.ic_provider_workbuddy
         AiDefaultProviders.OPENCODE_ID -> R.drawable.ic_provider_opencode
         "claude" -> R.drawable.ic_provider_claude
         "gemini" -> R.drawable.ic_provider_gemini
@@ -1058,6 +1067,7 @@ internal fun AiProviderSetting.iconRes(): Int {
         "xiaomi_mimo" -> R.drawable.ic_provider_mimo
         "siliconflow" -> R.drawable.ic_provider_siliconflow
         "openrouter" -> R.drawable.ic_provider_openrouter
+        AiDefaultProviders.AGNES_ID -> R.drawable.ic_provider_agnes
         "aliyun_bailian" -> R.drawable.ic_provider_aliyun
         "volcengine" -> R.drawable.ic_provider_volcengine
         "moonshot" -> R.drawable.ic_provider_moonshot
@@ -1092,10 +1102,11 @@ private fun resolveModelIconRes(modelName: String): Int? {
         Regex("qwen|qwq|qvq").containsMatchIn(modelName) -> R.drawable.ic_model_qwen
         Regex("doubao").containsMatchIn(modelName) -> R.drawable.ic_model_doubao
         Regex("openrouter").containsMatchIn(modelName) -> R.drawable.ic_provider_openrouter
+        Regex("\\bagnes\\b").containsMatchIn(modelName) -> R.drawable.ic_provider_agnes
         Regex("zhipu|智谱|glm").containsMatchIn(modelName) -> R.drawable.ic_provider_zhipu
         Regex("mistral").containsMatchIn(modelName) -> R.drawable.ic_model_mistral
         Regex("meta\\b|(?<!o)llama").containsMatchIn(modelName) -> R.drawable.ic_model_meta
-        Regex("hunyuan|tencent").containsMatchIn(modelName) -> R.drawable.ic_model_hunyuan
+        Regex("hunyuan|混元|tencent|\\bhy(?:\\b|\\d)").containsMatchIn(modelName) -> R.drawable.ic_model_hunyuan
         Regex("gemma").containsMatchIn(modelName) -> R.drawable.ic_model_gemma
         Regex("perplexity").containsMatchIn(modelName) -> R.drawable.ic_model_perplexity
         Regex("aliyun|阿里云|百炼").containsMatchIn(modelName) -> R.drawable.ic_provider_aliyun

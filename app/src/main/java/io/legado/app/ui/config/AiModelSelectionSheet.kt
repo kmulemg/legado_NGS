@@ -4,7 +4,6 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -14,6 +13,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -71,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.R
+import io.legado.app.help.ai.assistantContextWindowLabel
 import io.legado.app.ui.design.components.compose.NgSearchBar
 import io.legado.app.ui.design.components.compose.NgSearchBarVariant
 import io.legado.app.ui.design.components.compose.ngDrawerContentCardColor
@@ -95,6 +97,8 @@ internal data class AiModelSelectionItemUiModel(
     val capabilities: List<ModelCapabilityTag>,
     val textTrial: Boolean = false,
     @param:StringRes val generationHintRes: Int? = null,
+    val contextWindow: Int? = null,
+    val creditMultiplierLabel: String? = null,
 )
 
 @Immutable
@@ -220,11 +224,20 @@ internal fun AiModelSelectionSheet(
     }
 
     val normalizedQuery = query.trim()
-    val filteredProviders = remember(state.providers, normalizedQuery) {
-        state.providers.filterModels(normalizedQuery)
+    val selectedTarget = remember(state) { state.selectedTarget() }
+    // Capture the saved selection once the opening catalog is ready.
+    val openingTarget = if (isLoading) null else remember { selectedTarget }
+    val orderedProviders = remember(state.providers, openingTarget) {
+        state.providers.prioritizeDrawerGroup { it.id == openingTarget?.providerId }
     }
-    val pages = remember(state.providers) {
-        state.providers.map { provider ->
+    val filteredProviders = remember(orderedProviders, normalizedQuery) {
+        orderedProviders.filterModels(normalizedQuery)
+    }
+    val openingPosition = remember(openingTarget, filteredProviders) {
+        openingTarget?.position(filteredProviders)
+    }
+    val pages = remember(orderedProviders) {
+        orderedProviders.map { provider ->
             AiModelSelectionPage(
                 key = providerPageKey(provider.id),
                 label = provider.name,
@@ -236,12 +249,12 @@ internal fun AiModelSelectionSheet(
     val pagerState = rememberPagerState(pageCount = { pages.size })
     val currentPages by rememberUpdatedState(pages)
     val currentOnProviderOpen by rememberUpdatedState<(String) -> Unit>({ openProvider(it) })
-    val selectedTarget = remember(state) { state.selectedTarget() }
     val selectedVisible = selectedTarget?.position(filteredProviders)
     val hasSavedSelection = state.selectedProviderId.isNotBlank() || state.selectedModelId.isNotBlank()
     val refreshInteractionSource = remember { MutableInteractionSource() }
     val locateInteractionSource = remember { MutableInteractionSource() }
     val searchInteractionSource = remember { MutableInteractionSource() }
+    var appliedQuery by remember { mutableStateOf("") }
 
     LaunchedEffect(isLoading, pages) {
         if (!initialPageChosen && !isLoading && pages.isNotEmpty()) {
@@ -253,7 +266,9 @@ internal fun AiModelSelectionSheet(
         }
     }
     LaunchedEffect(normalizedQuery) {
-        if (!locatingSelection) listStates.values.toList().forEach { it.scrollToItem(0) }
+        if (normalizedQuery == appliedQuery) return@LaunchedEffect
+        appliedQuery = normalizedQuery
+        if (!locatingSelection) listStates.values.forEach { it.requestScrollToItem(0) }
     }
     LaunchedEffect(searchExpanded) {
         if (searchExpanded) {
@@ -487,7 +502,11 @@ internal fun AiModelSelectionSheet(
                         },
                 ) { pageIndex ->
                     val page = pages[pageIndex]
-                    val listState = listStates.getOrPut(page.key) { LazyListState() }
+                    val listState = listStates.getOrPut(page.key) {
+                        LazyListState(
+                            firstVisibleItemIndex = openingPosition?.takeIf { it.pageKey == page.key }?.row ?: 0,
+                        )
+                    }
                     val provider = filteredProviders.firstOrNull { it.id == page.providerId }
                     val originalProvider = state.providers.firstOrNull { it.id == page.providerId }
                     val fetchStatus = fetchStatuses[page.providerId]
@@ -641,6 +660,7 @@ private fun AiModelCatalogMessage(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AiModelSelectionCard(
     model: AiModelSelectionItemUiModel,
@@ -698,15 +718,35 @@ private fun AiModelSelectionCard(
                         color = ngDrawerSecondaryTextColor(colorResource(R.color.ng_on_surface_variant)),
                         fontSize = 12.sp,
                     )
-                } else if (model.capabilities.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier.padding(top = 6.dp),
+                }
+                val contextWindowLabel = model.contextWindow?.let {
+                    stringResource(R.string.ai_catalog_context_badge, assistantContextWindowLabel(it))
+                }
+                val metadata = listOfNotNull(contextWindowLabel, model.creditMultiplierLabel)
+                val hasTags = !model.textTrial && model.capabilities.isNotEmpty()
+                if (hasTags || metadata.isNotEmpty()) {
+                    FlowRow(
+                        modifier = Modifier.padding(top = if (hasTags) 6.dp else 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
-                        model.capabilities.forEach { capability ->
-                            AiSelectionCapabilityIcon(capability)
+                        val centered = Modifier.align(Alignment.CenterVertically)
+                        if (hasTags) {
+                            model.capabilities.forEach { AiModelCapabilityIcon(it, centered) }
+                        }
+                        metadata.forEachIndexed { index, label ->
+                            Text(
+                                text = label,
+                                modifier = centered.padding(start = if (hasTags || index > 0) 6.dp else 0.dp),
+                                color = ngDrawerSecondaryTextColor(colorResource(R.color.ng_on_surface_variant)),
+                                fontSize = 12.sp,
+                                lineHeight = 15.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
-                } else {
+                } else if (!model.textTrial) {
                     Spacer(Modifier.height(6.dp))
                 }
                 model.generationHintRes?.let { hint ->
@@ -734,28 +774,6 @@ internal fun BoxScope.AiSelectionCardIndicator(selected: Boolean) {
                 .width(6.dp)
                 .fillMaxHeight()
                 .background(Color(NgTheme.colors.primary)),
-        )
-    }
-}
-
-@Composable
-private fun AiSelectionCapabilityIcon(capability: ModelCapabilityTag) {
-    val tint = Color(capability.color)
-    Box(
-        modifier = Modifier
-            .padding(end = 4.dp)
-            .size(20.dp)
-            .clip(RoundedCornerShape(5.dp))
-            .background(tint.copy(alpha = 24f / 255f))
-            .border(1.dp, tint, RoundedCornerShape(5.dp))
-            .padding(3.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            painter = painterResource(capability.iconRes),
-            contentDescription = stringResource(capability.labelRes),
-            modifier = Modifier.fillMaxSize(),
-            tint = tint,
         )
     }
 }

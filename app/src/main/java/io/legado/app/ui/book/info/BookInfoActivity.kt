@@ -27,7 +27,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
-import com.google.gson.JsonObject
 import io.legado.app.R
 import io.legado.app.ui.design.theme.NgInterfaceFontMarkwonPlugin
 import io.legado.app.base.ComposeActivityBinding
@@ -49,8 +48,6 @@ import io.legado.app.help.GlideImageGetter
 import io.legado.app.help.TextViewTagHandler
 import io.legado.app.help.source.webCacheObject
 import io.legado.app.help.http.BookSourceCookieStore
-import io.legado.app.help.ai.AgentModeEntryContext
-import io.legado.app.help.ai.AiSkillRegistry
 import io.legado.app.help.book.addType
 import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isAudio
@@ -85,7 +82,11 @@ import io.legado.app.ui.about.NetworkLogDialog
 import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.ui.book.changecover.ChangeCoverDialog
 import io.legado.app.ui.book.character.BookCharacterActivity
-import io.legado.app.ui.book.character.BookCharacterLabels
+import io.legado.app.ui.book.character.BookCharacterDetailActivity
+import io.legado.app.ui.book.character.BookCharacterSilhouetteSettings
+import io.legado.app.ui.book.character.BookCharacterSilhouetteStyle
+import io.legado.app.ui.book.character.automaticCharacterSilhouetteStyle
+import io.legado.app.ui.book.character.putAutomaticCharacterSilhouetteStyle
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.changesource.ChangeBookSourceDrawer
 import io.legado.app.ui.book.info.edit.BookInfoEditActivity
@@ -97,11 +98,6 @@ import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.book.source.edit.BookSourceEditActivity
 import io.legado.app.ui.book.toc.TocActivityResult
-import io.legado.app.ui.config.AiChatActivity
-import io.legado.app.ui.config.CHARACTER_CARD_ENTRY_CONTEXT
-import io.legado.app.ui.config.aiChatSessions
-import io.legado.app.ui.config.characterCardTasks
-import io.legado.app.ui.config.showAiChatTaskPicker
 import io.legado.app.ui.design.theme.NgAppTheme
 import io.legado.app.utils.SelectDirectoryContract
 import io.legado.app.ui.login.SourceLoginActivity
@@ -243,6 +239,7 @@ class BookInfoActivity :
         get() = uiState
     internal val bookInfoSettingsSourceKey: String?
         get() = viewModel.bookSource?.getKey()
+    private var layoutPreview by mutableStateOf<Pair<String, BookInfoLayout>?>(null)
     private var pendingWebFileSuccess: ((Book) -> Unit)? = null
     private var pendingArchiveUri: Uri? = null
     private var pendingUnsupportedWebFile: BookInfoViewModel.WebFile? = null
@@ -301,7 +298,6 @@ class BookInfoActivity :
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         uiState = uiState.copy(
             tocText = getString(R.string.toc_s, getString(R.string.loading)),
-            autoLoadOtherWorks = getPrefBoolean(PreferKey.autoLoadBookOtherWorks),
         )
         binding.composeView.setViewCompositionStrategy(
             ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed,
@@ -311,6 +307,7 @@ class BookInfoActivity :
                 BookInfoScreen(
                     state = uiState,
                     introView = introContainer,
+                    layoutPreview = layoutPreview?.takeIf { it.first == uiState.book?.bookUrl }?.second,
                     onEvent = ::handleUiEvent,
                 )
             }
@@ -328,11 +325,25 @@ class BookInfoActivity :
         viewModel.otherWorksLoadingData.observe(this) {
             uiState = uiState.copy(otherWorksLoading = it)
         }
+        viewModel.otherWorksPreferences.observe(this) { preferences ->
+            uiState = uiState.copy(autoLoadOtherWorks = preferences.autoLoad)
+            viewModel.getBook(false)?.let(viewModel::prepareOtherWorks)
+        }
         viewModel.bookshelfChanged.observe(this) {
             updateOtherWorksUiItems()
         }
         viewModel.waitDialogData.observe(this) { upWaitDialogStatus(it) }
         viewModel.initData(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val current = uiState.book ?: return
+        if (!current.menuCapabilities.textContent) return
+        val style = characterSilhouetteStyle(current)
+        if (style != uiState.characterSilhouetteStyle) {
+            uiState = uiState.copy(characterSilhouetteStyle = style)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -361,12 +372,21 @@ class BookInfoActivity :
             BookInfoUiEvent.ChangeGroup -> changeGroup()
             BookInfoUiEvent.OpenToc -> openChapterListFromUi()
             BookInfoUiEvent.CacheBook -> viewModel.getBook()?.let(::startCacheBook)
-            BookInfoUiEvent.CharacterAi -> viewModel.getBook()?.let(::openCharacterCardAiAssistant)
             BookInfoUiEvent.OpenCharacters -> viewModel.getBook()?.let { current ->
                 openCharacterActivity(
                     current,
                     BookCharacterProfile.workKey(current.name, current.author),
                 )
+            }
+            is BookInfoUiEvent.OpenCharacterDetail -> viewModel.getBook()?.let { current ->
+                if (current.menuCapabilities.textContent) {
+                    BookCharacterDetailActivity.open(
+                        this,
+                        BookCharacterProfile.workKey(current.name, current.author),
+                        event.characterId,
+                        current.automaticCharacterSilhouetteStyle(),
+                    )
+                }
             }
             BookInfoUiEvent.RefreshOtherWorks -> viewModel.searchOtherWorks()
             is BookInfoUiEvent.OpenOtherWork -> showBookInfo(
@@ -412,6 +432,11 @@ class BookInfoActivity :
             BookInfoMenuAction.SetBookVariable -> showBookInfoSettings(BookInfoVariableKind.Book)
             BookInfoMenuAction.CopyBookUrl -> copyBookUrl()
             BookInfoMenuAction.CopyTocUrl -> copyTocUrl()
+            BookInfoMenuAction.EditSource -> handleUiEvent(BookInfoUiEvent.OriginClick)
+            BookInfoMenuAction.ChangeSource -> handleUiEvent(BookInfoUiEvent.ChangeSource)
+            BookInfoMenuAction.ChangeGroup -> handleUiEvent(BookInfoUiEvent.ChangeGroup)
+            BookInfoMenuAction.ViewToc -> handleUiEvent(BookInfoUiEvent.OpenToc)
+            BookInfoMenuAction.CacheBook -> handleUiEvent(BookInfoUiEvent.CacheBook)
             BookInfoMenuAction.CanUpdate -> toggleCanUpdate()
             BookInfoMenuAction.SplitLongChapter -> toggleSplitLongChapter()
             BookInfoMenuAction.DeleteAlert -> {
@@ -431,10 +456,7 @@ class BookInfoActivity :
             BookInfoMenuAction.Log -> showDialogFragment<AppLogDialog>()
             BookInfoMenuAction.NetworkLog -> showDialogFragment<NetworkLogDialog>()
             BookInfoMenuAction.AutoLoadOtherWorks -> {
-                val enabled = !uiState.autoLoadOtherWorks
-                putPrefBoolean(PreferKey.autoLoadBookOtherWorks, enabled)
-                uiState = uiState.copy(autoLoadOtherWorks = enabled)
-                viewModel.setAutoLoadOtherWorks(enabled)
+                putPrefBoolean(PreferKey.autoLoadBookOtherWorks, !uiState.autoLoadOtherWorks)
             }
         }
     }
@@ -442,6 +464,20 @@ class BookInfoActivity :
     internal fun onBookInfoSettingsAction(bookUrl: String, action: BookInfoMenuAction) {
         if (viewModel.getBook(false)?.bookUrl == bookUrl) {
             handleBookInfoMenuAction(action)
+        }
+    }
+
+    internal fun previewBookInfoLayout(bookUrl: String, layout: BookInfoLayout?) {
+        if (layout != null) {
+            layoutPreview = bookUrl to layout
+        } else if (layoutPreview?.first == bookUrl) {
+            layoutPreview = null
+        }
+    }
+
+    internal fun scrollToBookInfoCover(bookUrl: String) {
+        if (uiState.book?.bookUrl == bookUrl) {
+            uiState = uiState.copy(scrollResetToken = uiState.scrollResetToken + 1)
         }
     }
 
@@ -645,7 +681,7 @@ class BookInfoActivity :
         upKinds(book)
         upGroup(book)
         observeCharacterPreview(book)
-        viewModel.prepareOtherWorks(book, uiState.autoLoadOtherWorks)
+        viewModel.prepareOtherWorks(book)
     }
 
     private fun updateBookSnapshot(book: Book) {
@@ -681,6 +717,9 @@ class BookInfoActivity :
             charactersVisible = !bookChanged && book.menuCapabilities.textContent && uiState.charactersVisible,
             characters = if (bookChanged) emptyList() else uiState.characters,
             characterCount = if (bookChanged) 0 else uiState.characterCount,
+            characterSilhouetteStyle = if (book.menuCapabilities.textContent) {
+                characterSilhouetteStyle(book)
+            } else BookCharacterSilhouetteStyle.GENERIC,
             otherWorksState = if (bookChanged) {
                 BookInfoOtherWorksState.Idle
             } else {
@@ -821,9 +860,9 @@ class BookInfoActivity :
                 BookInfoCharacterUiItem(
                     id = character.id,
                     name = character.name,
-                    intro = character.displayIntro()
-                        ?: BookCharacterLabels.roleLabel(this, character.roleTag),
-                    avatarColorRes = character.avatarColor(),
+                    roleTag = character.roleTag,
+                    intro = character.displayIntro(),
+                    portraitUri = character.portraitUri,
                 )
             },
         )
@@ -845,13 +884,9 @@ class BookInfoActivity :
         }
     }
 
-    private fun BookCharacter.avatarColor(): Int {
-        return when (gender) {
-            BookCharacter.Gender.MALE -> R.color.character_avatar_male
-            BookCharacter.Gender.FEMALE -> R.color.character_avatar_female
-            else -> R.color.character_avatar_unknown
-        }
-    }
+    private fun characterSilhouetteStyle(book: Book): BookCharacterSilhouetteStyle =
+        BookCharacterSilhouetteSettings.get(this)
+            .resolve(book.automaticCharacterSilhouetteStyle())
 
     private fun openCharacterActivity(book: Book, workKey: String) {
         if (!book.menuCapabilities.textContent) return
@@ -860,68 +895,7 @@ class BookInfoActivity :
             putExtra(BookCharacterActivity.EXTRA_BOOK_NAME, book.name)
             putExtra(BookCharacterActivity.EXTRA_BOOK_AUTHOR, book.author)
             putExtra(BookCharacterActivity.EXTRA_BOOK_URL, book.bookUrl)
-        }
-    }
-
-    private fun openCharacterCardAiAssistant(book: Book) {
-        if (!book.menuCapabilities.textContent) return
-        val workKey = BookCharacterProfile.workKey(book.name, book.author)
-        val payload = JsonObject().apply {
-            addProperty("work_key", workKey)
-            addProperty("book_name", book.name)
-            addProperty("book_author", book.getRealAuthor())
-            addProperty("book_url", book.bookUrl)
-            addProperty("origin_name", book.originName)
-            book.kind?.takeIf { it.isNotBlank() }?.let { addProperty("category", it) }
-            book.wordCount?.takeIf { it.isNotBlank() }?.let { addProperty("word_count", it) }
-            addProperty("total_chapters", book.totalChapterNum)
-            book.durChapterTitle?.takeIf { it.isNotBlank() }?.let {
-                addProperty("current_chapter_index", book.durChapterIndex + 1)
-                addProperty("current_chapter_title", it)
-            }
-            book.latestChapterTitle?.takeIf { it.isNotBlank() }?.let {
-                addProperty("latest_chapter_title", it)
-            }
-            book.getDisplayIntro()
-                .orEmpty()
-                .toPlainBookIntro()
-                .limitAiContextText(1800)
-                .takeIf { it.isNotBlank() }
-                ?.let { addProperty("book_intro", it) }
-        }
-        val entryContext = AgentModeEntryContext(
-            contextId = CHARACTER_CARD_ENTRY_CONTEXT,
-            payload = payload
-        )
-        fun openSession(sessionId: String?) {
-            startActivity<AiChatActivity> {
-                putExtra(AiChatActivity.EXTRA_ENTRY, AiChatActivity.ENTRY_BOOK_DETAIL)
-                putStringArrayListExtra(
-                    AiChatActivity.EXTRA_LOADED_SKILL_IDS,
-                    arrayListOf(AiSkillRegistry.SKILL_CHARACTER_CARD_GENERATE)
-                )
-                putExtra(AiChatActivity.EXTRA_MODE_ENTRY_CONTEXT, entryContext.toJson())
-                putExtra(AiChatActivity.EXTRA_EXPAND_SUGGESTIONS, true)
-                if (sessionId != null) putExtra(AiChatActivity.EXTRA_TASK_SESSION_ID, sessionId)
-            }
-        }
-        val tasks = aiChatSessions.tasks.value.characterCardTasks(workKey)
-        if (tasks.size > 1) showAiChatTaskPicker(tasks, onOpenTask = ::openSession)
-        else openSession(tasks.singleOrNull()?.sessionId)
-    }
-
-    private fun String.toPlainBookIntro(): String {
-        return replace(Regex("""<use(html|web)>|</use(html|web)>|<md>|</md>"""), "")
-            .replace(Regex("""<[^>]+>"""), "")
-            .replace(Regex("""[ \t\r\n]+"""), " ")
-            .trim()
-    }
-
-    private fun String.limitAiContextText(maxLength: Int): String {
-        return if (length <= maxLength) {
-            this
-        } else {
-            take(maxLength).trimEnd() + "..."
+            putAutomaticCharacterSilhouetteStyle(book.automaticCharacterSilhouetteStyle())
         }
     }
 

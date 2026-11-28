@@ -1,5 +1,6 @@
 package io.legado.app.ui.design.components.compose
 
+import android.os.Build
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -71,8 +72,10 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
@@ -95,9 +98,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.takeOrElse
+import androidx.compose.ui.window.PopupProperties
 import io.legado.app.R
 import io.legado.app.ui.design.components.NgButtonVariant
 import io.legado.app.ui.design.theme.NgSolidButtonPalette
@@ -107,6 +113,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private val formRowStartPadding = 14.dp
 private val formRowEndPadding = 10.dp
@@ -149,7 +156,7 @@ fun NgFormGroup(
     }
 }
 
-enum class NgFormPanelVariant { STANDARD, LARGE_ROUNDED, SOURCE_EDITOR }
+enum class NgFormPanelVariant { STANDARD, LARGE_ROUNDED, SOURCE_EDITOR, LIQUID_GLASS }
 
 /** 不附带外部标题的连续亮白表单底板。 */
 @Composable
@@ -167,13 +174,30 @@ fun NgFormPanel(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val radius = when (variant) {
-        NgFormPanelVariant.STANDARD, NgFormPanelVariant.SOURCE_EDITOR -> NgTheme.shapes.mediumDp
+        NgFormPanelVariant.STANDARD,
+        NgFormPanelVariant.SOURCE_EDITOR,
+        NgFormPanelVariant.LIQUID_GLASS -> NgTheme.shapes.mediumDp
         NgFormPanelVariant.LARGE_ROUNDED -> NgTheme.shapes.largeDp
     }
     val shape = RoundedCornerShape(radius.dp)
     val cardColor = if (variant == NgFormPanelVariant.SOURCE_EDITOR) {
         Color(NgTheme.colors.cardContainer).copy(alpha = 1f)
     } else ngDrawerContentCardColor()
+    if (variant == NgFormPanelVariant.LIQUID_GLASS &&
+        NgTheme.usesLiquidGlass &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        hasCurrentNgLiquidGlassBackdrop()
+    ) {
+        NgVisualSurface(
+            modifier = modifier.fillMaxWidth(),
+            role = NgMaterialRole.CONTENT,
+            cornerRadius = radius.dp,
+            shape = shape,
+            style = NgGlassDefaults.bookDetailStyle(cardColor),
+            content = content,
+        )
+        return
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -448,6 +472,7 @@ fun NgFormSelectRow(
     enabled: Boolean = true,
     menuVariant: NgFormSelectMenuVariant = NgFormSelectMenuVariant.MATCH_ROW,
     contentStartPadding: Dp = formRowStartPadding,
+    useVisibleWindowBounds: Boolean = false,
 ) {
     NgFormChoiceRow(
         title = title,
@@ -461,6 +486,7 @@ fun NgFormSelectRow(
         menuVariant = menuVariant,
         multiple = false,
         contentStartPadding = contentStartPadding,
+        useVisibleWindowBounds = useVisibleWindowBounds,
     )
 }
 
@@ -526,11 +552,13 @@ private fun NgFormChoiceRow(
     menuVariant: NgFormSelectMenuVariant,
     multiple: Boolean,
     contentStartPadding: Dp = formRowStartPadding,
+    useVisibleWindowBounds: Boolean = false,
 ) {
     val colors = NgTheme.colors
     val layoutDensity = LocalDensity.current
     var expanded by remember { mutableStateOf(false) }
     var rowWidthPx by remember { mutableStateOf(0) }
+    var arrowBoundsInRoot by remember { mutableStateOf<IntRect?>(null) }
     val contentAlpha = if (enabled) 1f else 0.45f
     val rowWidth = with(layoutDensity) { rowWidthPx.toDp() }
     val filter = menuVariant == NgFormSelectMenuVariant.END_ANCHORED_FILTER
@@ -542,6 +570,42 @@ private fun NgFormChoiceRow(
         extraItemWidth = if (multiple) 32.dp else 0.dp,
     )
     val menuOffset = DpOffset(x = (rowWidth - menuWidth).coerceAtLeast(0.dp), y = 0.dp)
+    val menuShape = RoundedCornerShape(NgTheme.shapes.mediumDp.dp)
+    val menuColor = ngDrawerContentCardColor()
+    val dismissMenu = { expanded = false }
+    val menuItems: @Composable ColumnScope.() -> Unit = {
+        options.forEach { option ->
+            val selected = isSelected(option.value)
+            DropdownMenuItem(
+                enabled = option.enabled,
+                modifier = Modifier
+                    .height(44.dp)
+                    .semantics { this.selected = selected },
+                text = {
+                    Text(
+                        text = option.label,
+                        color = Color(if ((filter || multiple) && selected) colors.primary else colors.onSurface)
+                            .copy(alpha = if (option.enabled) 1f else 0.45f),
+                        style = if (contentWidth) optionStyle else LocalTextStyle.current,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                trailingIcon = if ((filter || multiple) && selected) {
+                    {
+                        Icon(Icons.Rounded.Check, contentDescription = null,
+                            modifier = Modifier.size(20.dp), tint = Color(colors.primary))
+                    }
+                } else null,
+                onClick = {
+                    if (!multiple) dismissMenu()
+                    onValueChange(option.value)
+                },
+                contentPadding = PaddingValues(horizontal = optionPadding),
+            )
+        }
+    }
 
     Box(
         modifier = modifier
@@ -579,54 +643,51 @@ private fun NgFormChoiceRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Icon(
-                painter = arrowIcon,
-                contentDescription = null,
-                modifier = Modifier.size(formChoiceArrowSize),
-                tint = Color(if (filter) colors.primary else colors.onSurfaceVariant).copy(alpha = contentAlpha),
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.width(menuWidth),
-            offset = menuOffset,
-            shape = RoundedCornerShape(NgTheme.shapes.mediumDp.dp),
-            containerColor = ngDrawerContentCardColor(),
-            tonalElevation = 0.dp,
-            shadowElevation = 4.dp,
-        ) {
-            options.forEach { option ->
-                val selected = isSelected(option.value)
-                DropdownMenuItem(
-                    enabled = option.enabled,
-                    modifier = Modifier
-                        .height(44.dp)
-                        .semantics { this.selected = selected },
-                    text = {
-                        Text(
-                            text = option.label,
-                            color = Color(if ((filter || multiple) && selected) colors.primary else colors.onSurface)
-                                .copy(alpha = if (option.enabled) 1f else 0.45f),
-                            style = if (contentWidth) optionStyle else LocalTextStyle.current,
-                            fontSize = 15.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    trailingIcon = if ((filter || multiple) && selected) {
-                        {
-                            Icon(Icons.Rounded.Check, contentDescription = null,
-                                modifier = Modifier.size(20.dp), tint = Color(colors.primary))
-                        }
-                    } else null,
-                    onClick = {
-                        if (!multiple) expanded = false
-                        onValueChange(option.value)
-                    },
-                    contentPadding = PaddingValues(horizontal = optionPadding),
+            val arrowModifier = if (useVisibleWindowBounds) {
+                Modifier.onGloballyPositioned { coordinates ->
+                    val position = coordinates.positionInRoot()
+                    val left = position.x.roundToInt()
+                    val top = position.y.roundToInt()
+                    arrowBoundsInRoot = IntRect(left, top, left + coordinates.size.width, top + coordinates.size.height)
+                }
+            } else Modifier
+            Box(arrowModifier.height(44.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    painter = arrowIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(formChoiceArrowSize),
+                    tint = Color(if (filter) colors.primary else colors.onSurfaceVariant).copy(alpha = contentAlpha),
                 )
+                if (useVisibleWindowBounds) {
+                    NgPaneAwareDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = dismissMenu,
+                        modifier = Modifier.width(menuWidth),
+                        offset = DpOffset(0.dp, 4.dp),
+                        shape = menuShape,
+                        containerColor = menuColor,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 4.dp,
+                        properties = PopupProperties(focusable = true),
+                        endAnchored = true,
+                        anchorBoundsInRoot = arrowBoundsInRoot,
+                        content = menuItems,
+                    )
+                }
             }
+        }
+        if (!useVisibleWindowBounds) {
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = dismissMenu,
+                modifier = Modifier.width(menuWidth),
+                offset = menuOffset,
+                shape = menuShape,
+                containerColor = menuColor,
+                tonalElevation = 0.dp,
+                shadowElevation = 4.dp,
+                content = menuItems,
+            )
         }
     }
 }
@@ -690,8 +751,9 @@ private fun NgStepperButton(
     onLongPressFinished: (() -> Unit)? = null,
     @DrawableRes chevronIcon: Int? = null,
     modifier: Modifier = Modifier,
+    commitOnRelease: Boolean = false,
 ) {
-    if (chevronIcon != null) {
+    if (chevronIcon != null && !commitOnRelease) {
         NgSliderStepButton(
             iconRes = chevronIcon,
             contentDescription = contentDescription,
@@ -711,8 +773,11 @@ private fun NgStepperButton(
     val repeatEnabled = onLongPressStep != null && onLongPressFinished != null
     Box(
         modifier = modifier
-            .size(34.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .size(
+                width = if (chevronIcon == null) 34.dp else formNumberStepWidth,
+                height = if (chevronIcon == null) 34.dp else 44.dp,
+            )
+            .clip(RoundedCornerShape(if (chevronIcon == null) 8.dp else 18.dp))
             .then(
                 if (repeatEnabled) {
                     Modifier
@@ -773,14 +838,23 @@ private fun NgStepperButton(
             .semantics { this.contentDescription = contentDescription },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = Color(NgTheme.colors.onSurfaceVariant).copy(
-                alpha = if (enabled) 1f else 0.36f
-            ),
-            fontSize = 22.sp,
-            lineHeight = 22.sp,
-        )
+        if (chevronIcon == null) {
+            Text(
+                text = text,
+                color = Color(NgTheme.colors.onSurfaceVariant).copy(
+                    alpha = if (enabled) 1f else 0.36f
+                ),
+                fontSize = 22.sp,
+                lineHeight = 22.sp,
+            )
+        } else {
+            Icon(
+                painter = painterResource(chevronIcon),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = Color(NgTheme.colors.onSurface).copy(alpha = if (enabled) 0.74f else 0.28f),
+            )
+        }
     }
 }
 
@@ -901,7 +975,7 @@ fun NgFormNumberSettingRow(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    valueWidth: Dp = 96.dp,
+    valueWidth: Dp = Dp.Unspecified,
     keyboardOptions: KeyboardOptions = KeyboardOptions(
         keyboardType = KeyboardType.Number,
         imeAction = ImeAction.Done,
@@ -913,6 +987,8 @@ fun NgFormNumberSettingRow(
     onStepValueChangeFinished: (() -> Unit)? = null,
     variant: NgFormNumberSettingRowVariant = NgFormNumberSettingRowVariant.OUTLINED,
     isError: Boolean = false,
+    stepFallbackValue: Int? = null,
+    commitStepsOnRelease: Boolean = false,
 ) {
     val colors = NgTheme.colors
     val compact = variant == NgFormNumberSettingRowVariant.COMPACT_CHEVRONS
@@ -937,23 +1013,29 @@ fun NgFormNumberSettingRow(
     val stepControlsVisible = valueRange != null &&
         onStepValueChange != null &&
         onStepValueChangeFinished != null
-    val parsedValue = value.toIntOrNull()?.takeIf { current ->
-        valueRange?.let { current in it } ?: true
+    val requestedValueWidth = valueWidth.takeOrElse { if (compact) 44.dp else 96.dp }
+    val inputWidth = if (stepControlsVisible && !compact) {
+        requestedValueWidth.coerceAtMost(80.dp)
+    } else {
+        requestedValueWidth
     }
-    var repeatedValue by remember { mutableIntStateOf(parsedValue ?: 0) }
+    val stepBaseValue = value.toIntOrNull()?.takeIf { current ->
+        valueRange?.let { current in it } ?: true
+    } ?: stepFallbackValue?.takeIf { valueRange != null && it in valueRange }
+    var repeatedValue by remember { mutableIntStateOf(stepBaseValue ?: 0) }
     var repeating by remember { mutableStateOf(false) }
 
     fun stepValue(delta: Int, repeat: Boolean): Boolean {
         val range = valueRange ?: return false
         val base = if (repeat) {
             if (!repeating) {
-                val current = parsedValue ?: return false
+                val current = stepBaseValue ?: return false
                 repeatedValue = current
                 repeating = true
             }
             repeatedValue
         } else {
-            parsedValue ?: return false
+            stepBaseValue ?: return false
         }
         val next = (base + delta).coerceIn(range)
         if (next == base) return false
@@ -1009,7 +1091,7 @@ fun NgFormNumberSettingRow(
             NgStepperButton(
                 text = "−",
                 contentDescription = "${stringResource(R.string.reduce)} $title",
-                enabled = enabled && parsedValue != null && parsedValue > valueRange.first,
+                enabled = enabled && stepBaseValue != null && stepBaseValue > valueRange.first,
                 onClick = {
                     if (stepValue(delta = -1, repeat = false)) {
                         onStepValueChangeFinished()
@@ -1019,6 +1101,7 @@ fun NgFormNumberSettingRow(
                 onLongPressFinished = ::finishRepeatedValue,
                 chevronIcon = if (compact) R.drawable.ic_chevron_left_20 else null,
                 modifier = countControlModifier,
+                commitOnRelease = commitStepsOnRelease,
             )
             if (!compact) Spacer(Modifier.width(4.dp))
         }
@@ -1026,11 +1109,7 @@ fun NgFormNumberSettingRow(
             value = value,
             onValueChange = onValueChange,
             modifier = countControlModifier
-                .width(when {
-                    compact -> 44.dp
-                    stepControlsVisible -> valueWidth.coerceAtMost(80.dp)
-                    else -> valueWidth
-                })
+                .width(inputWidth)
                 .height(if (compact) 44.dp else 34.dp)
                 .semantics {
                     contentDescription = title
@@ -1090,7 +1169,7 @@ fun NgFormNumberSettingRow(
             NgStepperButton(
                 text = "+",
                 contentDescription = "${stringResource(R.string.plus)} $title",
-                enabled = enabled && parsedValue != null && parsedValue < valueRange.last,
+                enabled = enabled && stepBaseValue != null && stepBaseValue < valueRange.last,
                 onClick = {
                     if (stepValue(delta = 1, repeat = false)) {
                         onStepValueChangeFinished()
@@ -1100,6 +1179,7 @@ fun NgFormNumberSettingRow(
                 onLongPressFinished = ::finishRepeatedValue,
                 chevronIcon = if (compact) R.drawable.ic_chevron_right_20 else null,
                 modifier = countControlModifier,
+                commitOnRelease = commitStepsOnRelease,
             )
         }
     }
@@ -1382,6 +1462,7 @@ enum class NgFormMultilineFieldVariant {
     DIALOG_UNDERLINE,
     COMPACT_UNDERLINE,
     INSET_ACTION,
+    PANEL,
 }
 
 /**
@@ -1390,6 +1471,7 @@ enum class NgFormMultilineFieldVariant {
  * DIALOG_UNDERLINE 保留旧规则弹窗的浮动标签与底部输入线；
  * COMPACT_UNDERLINE 提供变量输入所需的紧凑下划线和尾部操作；
  * INSET_ACTION 将操作放在同一底板的行尾下方，随输入区一起增高。
+ * PANEL 由连续表单提供底板和分隔线，输入区只绘制文字与光标。
  */
 @Composable
 fun NgFormMultilineField(
@@ -1412,6 +1494,7 @@ fun NgFormMultilineField(
 ) {
     val colors = NgTheme.colors
     val insetAction = variant == NgFormMultilineFieldVariant.INSET_ACTION
+    val inPanel = variant == NgFormMultilineFieldVariant.PANEL
     val shape = RoundedCornerShape(
         (if (insetAction) NgTheme.shapes.mediumDp else NgTheme.shapes.smallDp).dp,
     )
@@ -1427,12 +1510,16 @@ fun NgFormMultilineField(
         label?.takeIf { it.isNotBlank() }?.let {
             Text(
                 text = it,
-                modifier = Modifier.padding(start = 2.dp, bottom = 6.dp),
+                modifier = Modifier.padding(start = if (inPanel) 0.dp else 2.dp, bottom = 6.dp),
                 color = Color(
-                    if (underlined) colors.primary else colors.onSurfaceVariant
+                    when {
+                        inPanel -> colors.onSurface
+                        underlined -> colors.primary
+                        else -> colors.onSurfaceVariant
+                    }
                 ).copy(alpha = contentAlpha),
-                fontSize = 13.sp,
-                lineHeight = 16.sp,
+                fontSize = if (inPanel) 14.sp else 13.sp,
+                lineHeight = if (inPanel) 18.sp else 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1444,7 +1531,9 @@ fun NgFormMultilineField(
                 .fillMaxWidth()
                 .heightIn(min = minHeight, max = maxHeight)
                 .then(
-                    if (hideHint && emptyHint != null) {
+                    if (inPanel && !label.isNullOrBlank()) {
+                        Modifier.semantics { contentDescription = label }
+                    } else if (hideHint && emptyHint != null) {
                         Modifier.semantics { contentDescription = emptyHint }
                     } else Modifier
                 ),
@@ -1464,7 +1553,9 @@ fun NgFormMultilineField(
             keyboardActions = keyboardActions,
             decorationBox = { innerTextField ->
                 val fieldModifier = Modifier.fillMaxWidth().heightIn(min = minHeight, max = maxHeight)
-                val decorationModifier = if (underlined) {
+                val decorationModifier = if (inPanel) {
+                    fieldModifier
+                } else if (underlined) {
                     fieldModifier
                         .drawBehind {
                             val strokeWidth = (if (focused) 1.5.dp else 1.dp).toPx()
@@ -1532,7 +1623,7 @@ fun NgFormMultilineField(
                         ) { fieldContent() }
                         if (trailingContent != null) trailingContent() else Spacer(Modifier.width(10.dp))
                     }
-                    underlined -> Box(decorationModifier) { fieldContent() }
+                    inPanel || underlined -> Box(decorationModifier) { fieldContent() }
                     else -> Box(decorationModifier.padding(horizontal = 12.dp, vertical = 10.dp)) { fieldContent() }
                 }
             },

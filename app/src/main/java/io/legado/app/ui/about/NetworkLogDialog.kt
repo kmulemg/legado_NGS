@@ -117,9 +117,10 @@ class NetworkLogDialog : BaseComposeDialogFragment(), CodeDialog.ExportCallback 
             loading = true
             try {
                 val requestId = "network_log_${item.id}_${item.time}"
-                exportEntries[requestId] = item
+                val current = NetworkLog.find(item.id) ?: item
+                exportEntries[requestId] = current
                 val detail = withContext(Dispatchers.Default) {
-                    item.formatDetail(preview = true)
+                    current.formatDetail(preview = true)
                 }
                 if (isAdded) {
                     showDialogFragment(
@@ -165,15 +166,26 @@ class NetworkLogDialog : BaseComposeDialogFragment(), CodeDialog.ExportCallback 
                     if (error != null) {
                         append("\nERROR: ").append(error.lineSequence().firstOrNull())
                     }
+                    generation?.let { result ->
+                        tookMs?.let { append('\n').append(getString(R.string.ai_log_headers_time, it)) }
+                        append('\n').append(getString(
+                            R.string.ai_log_total_time, getString(result.state.labelRes()), result.elapsedMs,
+                        ))
+                        result.finishReason?.let { append(" · ").append(it) }
+                    }
                     append("\n").append(source)
                 }
             )
             appendSection("Request headers", requestHeaders)
             appendSection("Request body · ${requestBody.bodyType()}", requestBody.formatBody(preview))
             appendSection("Response headers", responseHeaders)
+            val eventStream = responseHeaders?.lineSequence()?.any { header ->
+                header.substringBefore(':').equals("Content-Type", ignoreCase = true) &&
+                    header.substringAfter(':').trim().startsWith("text/event-stream", ignoreCase = true)
+            } == true
             appendSection(
-                "Response body · ${responseBody.bodyType()}",
-                responseBody.formatBody(preview),
+                "Response body · ${if (eventStream) "SSE" else responseBody.bodyType()}",
+                responseBody.formatBody(preview, showEnd = eventStream),
             )
             appendSection("Error", error)
         }
@@ -196,10 +208,14 @@ class NetworkLogDialog : BaseComposeDialogFragment(), CodeDialog.ExportCallback 
         }
     }
 
-    private fun String?.formatBody(preview: Boolean): String? {
+    private fun String?.formatBody(preview: Boolean, showEnd: Boolean = false): String? {
         val value = this?.trim() ?: return null
         if (value.isBlank()) return null
         if (preview && value.length > BODY_PREVIEW_MAX_LENGTH) {
+            if (showEnd) {
+                val half = BODY_PREVIEW_MAX_LENGTH / 2
+                return value.take(half) + "\n\n…\n\n" + value.takeLast(half)
+            }
             return value.take(BODY_PREVIEW_MAX_LENGTH) + getString(
                 R.string.large_text_preview_suffix,
                 BODY_PREVIEW_MAX_LENGTH,
@@ -401,7 +417,7 @@ private fun NetworkLogItem(
                 maxLines = 1,
             )
             NetworkStatus(item)
-            item.tookMs?.let { took ->
+            (item.generation?.elapsedMs ?: item.tookMs)?.let { took ->
                 Text(
                     text = "${took}ms",
                     modifier = Modifier.padding(start = 8.dp),
@@ -465,8 +481,9 @@ private fun NetworkLogItem(
 @Composable
 private fun NetworkStatus(item: NetworkLog.Entry) {
     val statusCode = item.statusCode
-    val error = item.error != null
-    if (statusCode == null && !error) return
+    val state = item.generation?.state
+    val error = item.error != null || (state != null && state != NetworkLog.GenerationState.COMPLETED)
+    if (statusCode == null && !error && state == null) return
     val color = if (!error && statusCode != null && statusCode in 200..399) {
         Color(0xFF34A853)
     } else {
@@ -482,7 +499,11 @@ private fun NetworkStatus(item: NetworkLog.Entry) {
                 .background(color, CircleShape),
         )
         Text(
-            text = statusCode?.toString() ?: "ERR",
+            text = when {
+                state == null -> statusCode?.toString() ?: "ERR"
+                statusCode == null -> stringResource(state.labelRes())
+                else -> "$statusCode · " + stringResource(state.labelRes())
+            },
             modifier = Modifier.padding(start = 4.dp),
             style = legacyLogTextStyle(
                 color = color,
@@ -491,6 +512,15 @@ private fun NetworkStatus(item: NetworkLog.Entry) {
             maxLines = 1,
         )
     }
+}
+
+private fun NetworkLog.GenerationState.labelRes(): Int = when (this) {
+    NetworkLog.GenerationState.COMPLETED -> R.string.ai_log_completed
+    NetworkLog.GenerationState.TRUNCATED -> R.string.ai_log_truncated
+    NetworkLog.GenerationState.INTERRUPTED -> R.string.ai_log_interrupted
+    NetworkLog.GenerationState.REFUSED -> R.string.ai_log_refused
+    NetworkLog.GenerationState.CANCELLED -> R.string.ai_log_cancelled
+    NetworkLog.GenerationState.FAILED -> R.string.ai_log_failed
 }
 
 private fun networkTypeColor(type: String): Color = when (type) {
